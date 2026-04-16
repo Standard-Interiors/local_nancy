@@ -1,0 +1,18 @@
+# TLS certs — each developer generates their own via mkcert
+certs/cert.pem
+certs/key.pem
+
+# Database dumps — too large for git, shared separately
+*.sql
+*.bak
+
+# Node dependencies (built inside Docker)
+auth-proxy/node_modules/
+d365bc-mock/node_modules/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Keep the certs directory but not the actual cert files
+!certs/.gitkeep

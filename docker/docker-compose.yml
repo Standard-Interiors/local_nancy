@@ -1,0 +1,193 @@
+services:
+  # ---------------------------------------------------------------------------
+  # SQL Server (Azure SQL Edge — ARM64 compatible)
+  # ---------------------------------------------------------------------------
+  sqlserver:
+    image: mcr.microsoft.com/azure-sql-edge:latest
+    container_name: geoff-sqlserver
+    ports:
+      - "1433:1433"
+    environment:
+      SA_PASSWORD: ${DB_PASSWORD:-LocalDev123!}
+      ACCEPT_EULA: "Y"
+    volumes:
+      - sqldata:/var/opt/mssql
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import socket; s=socket.create_connection(('localhost',1433),2); s.close()\" || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 40s
+
+  # ---------------------------------------------------------------------------
+  # Auth Proxy (replaces AWS Cognito — real DB auth with bcrypt + JWT)
+  # ---------------------------------------------------------------------------
+  auth-proxy:
+    build:
+      context: ../services/auth-proxy
+    container_name: geoff-auth-proxy
+    ports:
+      - "3100:3100"
+    env_file:
+      - ../config/.env
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3100/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # D365 BC Mock (replaces Microsoft Dynamics 365 Business Central)
+  # ---------------------------------------------------------------------------
+  d365bc-mock:
+    build:
+      context: ../services/d365bc-mock
+    container_name: geoff-d365bc-mock
+    ports:
+      - "3200:3200"
+    environment:
+      PORT: "3200"
+      GEOFF_API_URL: "http://api:5000"
+      BC365_API_ORIGIN: "http://d365bc-mock:3200"
+      BC365_API_KEY: "local"
+      BC365_CLIENT_ID: "local"
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3200/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # GeoffERP-API (.NET Core 3.1 — local JWT auth via auth-proxy)
+  # ---------------------------------------------------------------------------
+  api:
+    platform: linux/amd64
+    build:
+      context: ../../GeoffERP-API
+      dockerfile: ../local-dev/docker/Dockerfile.api
+    container_name: geoff-api
+    ports:
+      - "5001:5000"
+    volumes:
+      - ../config/appsettings.Local.json:/app/appsettings.Local.json:ro
+    environment:
+      ASPNETCORE_ENVIRONMENT: "Local"
+      ASPNETCORE_URLS: "http://+:5000"
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # Floorplan Backend (Python Flask — geometric calculation + seam cutting)
+  # ---------------------------------------------------------------------------
+  floorplan:
+    platform: linux/amd64
+    build:
+      context: ../../floorplan-backend
+      dockerfile: ../local-dev/docker/Dockerfile.floorplan
+    container_name: geoff-floorplan
+    ports:
+      - "5008:80"
+    environment:
+      PORT: "80"
+      DEBUG: "true"
+      SECRET_KEY: "local-dev-secret-key"
+      AWS_ACCESS_KEY_S3: ${AWS_ACCESS_KEY_S3:-minioadmin}
+      AWS_SECRET_KEY_S3: ${AWS_SECRET_KEY_S3:-minioadmin}
+      AWS_BUCKET_NAME_S3: ${AWS_BUCKET_NAME_S3:-geoff-pdfs}
+      AWS_REGION_S3: ${AWS_REGION_S3:-us-east-1}
+    volumes:
+      - ../../floorplan-backend:/app
+
+  # ---------------------------------------------------------------------------
+  # MinIO (S3-compatible storage — replaces AWS S3)
+  # Console: http://localhost:9001 (minioadmin/minioadmin)
+  # ---------------------------------------------------------------------------
+  minio:
+    image: minio/minio
+    container_name: geoff-minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    volumes:
+      - miniodata:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: curl -f http://localhost:9000/minio/health/live || exit 1
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # Create default bucket on startup (one-shot)
+  minio-init:
+    image: minio/mc
+    container_name: geoff-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:-minioadmin};
+      mc mb --ignore-existing local/${AWS_BUCKET_NAME_S3:-geoff-pdfs};
+      mc anonymous set download local/${AWS_BUCKET_NAME_S3:-geoff-pdfs};
+      echo 'MinIO bucket ready';
+      "
+
+  # ---------------------------------------------------------------------------
+  # Seaming Frontend (static file server — SVG editor)
+  # ---------------------------------------------------------------------------
+  seaming-web:
+    image: python:3.10-slim
+    container_name: geoff-seaming
+    working_dir: /app
+    command: python -m http.server 8082
+    ports:
+      - "8082:8082"
+    volumes:
+      - ../../seaming-frontend/frontend/src:/app:ro
+
+  # ---------------------------------------------------------------------------
+  # Ordering System (static file server — customer portal)
+  # ---------------------------------------------------------------------------
+  ordering-web:
+    image: python:3.10-slim
+    container_name: geoff-ordering
+    working_dir: /app
+    command: python -m http.server 8083
+    ports:
+      - "8083:8083"
+    volumes:
+      - ../../ordering-system:/app:ro
+
+  # ---------------------------------------------------------------------------
+  # Caddy (reverse proxy — TLS + hostname routing)
+  # ---------------------------------------------------------------------------
+  caddy:
+    image: caddy:2
+    container_name: geoff-caddy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../certs:/etc/caddy/certs:ro
+      - caddy_data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - auth-proxy
+      - seaming-web
+      - ordering-web
+
+volumes:
+  sqldata:
+  caddy_data:
+  miniodata:

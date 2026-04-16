@@ -1,0 +1,31 @@
+FROM --platform=linux/amd64 mcr.microsoft.com/dotnet/sdk:6.0 AS build
+WORKDIR /src
+
+COPY GeOffERP.sln ./GeOffERP.sln
+COPY GEOFF.API/GEOFF.API.csproj GEOFF.API/
+COPY GEOFF.AWS/GEOFF.AWS.csproj GEOFF.AWS/
+COPY GEOFF.BUSINESS/GEOFF.BUSINESSLAYER.csproj GEOFF.BUSINESS/
+COPY GEOFF.CORE/GEOFF.CORE.csproj GEOFF.CORE/
+COPY GEOFF.HELPER/GEOFF.HELPER.csproj GEOFF.HELPER/
+COPY GEOFF.PERSISTENCE/GEOFF.PERSISTENCE.csproj GEOFF.PERSISTENCE/
+COPY GEOFF.VIEWMODELS/GEOFF.MODELS.csproj GEOFF.VIEWMODELS/
+RUN dotnet restore GeOffERP.sln
+
+COPY . .
+RUN dotnet publish GEOFF.API/GEOFF.API.csproj -c Release -o /app/publish
+
+# Copy RoleAccess data (not included in publish output)
+RUN cp -r GEOFF.API/RoleAccess /app/publish/RoleAccess || true
+
+FROM --platform=linux/amd64 mcr.microsoft.com/dotnet/core/aspnet:3.1
+WORKDIR /app
+COPY --from=build /app/publish .
+
+# Create upload directories
+RUN mkdir -p Upload/SVG Upload/PNG
+
+EXPOSE 5000
+ENV ASPNETCORE_URLS=http://+:5000
+ENV ASPNETCORE_ENVIRONMENT=Local
+
+ENTRYPOINT ["dotnet", "GEOFF.API.dll"]

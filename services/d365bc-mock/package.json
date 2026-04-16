@@ -1,0 +1,13 @@
+{
+  "name": "d365bc-mock",
+  "version": "1.0.0",
+  "description": "Medium-fidelity mock of Microsoft Dynamics 365 Business Central for local development",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "uuid": "^9.0.0"
+  }
+}

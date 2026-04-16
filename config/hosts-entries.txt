@@ -1,0 +1,6 @@
+# NANCY Local Dev
+127.0.0.1  dev.s10drd.com
+127.0.0.1  dev.api.s10drd.com
+127.0.0.1  dev.seaming.s10drd.com
+127.0.0.1  dev.mapy.s10drd.com
+127.0.0.1  order.s10drd.com

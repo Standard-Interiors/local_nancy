@@ -1,0 +1,39 @@
+{
+	auto_https off
+}
+
+dev.s10drd.com {
+	tls /etc/caddy/certs/cert.pem /etc/caddy/certs/key.pem
+	reverse_proxy host.docker.internal:3000
+}
+
+dev.api.s10drd.com {
+	tls /etc/caddy/certs/cert.pem /etc/caddy/certs/key.pem
+
+	@auth_routes {
+		path /authentication/api/login/*
+		path /Authentication/api/Login/*
+		path /api/Auth/*
+	}
+	handle @auth_routes {
+		reverse_proxy auth-proxy:3100
+	}
+	handle {
+		reverse_proxy api:5000
+	}
+}
+
+dev.seaming.s10drd.com {
+	tls /etc/caddy/certs/cert.pem /etc/caddy/certs/key.pem
+	reverse_proxy seaming-web:8082
+}
+
+dev.mapy.s10drd.com {
+	tls /etc/caddy/certs/cert.pem /etc/caddy/certs/key.pem
+	reverse_proxy floorplan:80
+}
+
+order.s10drd.com {
+	tls /etc/caddy/certs/cert.pem /etc/caddy/certs/key.pem
+	reverse_proxy ordering-web:8083
+}
