@@ -10,8 +10,37 @@ A fully local NANCY ERP environment running in Docker. No AWS, no cloud.
 
 - Admin dashboard at `https://dev.s10drd.com`
 - .NET API, SQL Server, auth, file storage, D365 BC mock — all local
-- Real seeded data (customers, orders, pricing contracts, users)
-- Login: `ashley@standardinteriors.com` / `LocalDev123!`
+- Real production data (customers, orders, pricing contracts, users)
+- Login: `admin@local.dev` / `password123` (Windows) or `ashley@standardinteriors.com` / `LocalDev123!` (Mac)
+
+---
+
+## Before you start — gather these
+
+| Item | Where to get it | Notes |
+|---|---|---|
+| **GitHub access** | `laitkor-org` organization | Your account needs read access to all 7 repos |
+| **Database dump** — `GEOFFERPDB_LIVE_backup.sql` | Team lead (Jay / Robert) | ~423 MB SQL file. Full live backup with real data |
+| **~20 GB free disk** | — | Docker images + DB + source code |
+
+> **Security warning:** `GEOFFERPDB_LIVE_backup.sql` contains **real production PII** — customer names, employee emails, order details, pricing data. Do NOT commit it to any git repo, share screenshots with real data outside the team, or copy it to unencrypted storage.
+
+---
+
+## Repos and branches — source of truth
+
+Clone all repos from **`laitkor-org`**. The `local-dev` infrastructure repo is at **`Standard-Interiors`**.
+
+| Repo | Org | Branch to use | Required? |
+|---|---|---|---|
+| `GeoffERP-API` | `laitkor-org` | **`staging`** | Yes — .NET API |
+| `Geoff-ERP` | `laitkor-org` | **`develop`** | Yes — React frontend |
+| `ordering-system` | `laitkor-org` | `master` (default) | Yes — customer ordering portal |
+| `seaming-frontend` | `laitkor-org` | `master` (default) | Yes — seaming SVG editor |
+| `floorplan-backend` | `laitkor-org` | `main` (default) | Yes — floorplan/measurement |
+| `GeoffQA` | `laitkor-org` | default | Optional — QA tooling |
+| `geoff-automation-test` | `laitkor-org` | default | Optional — automation tests |
+| `local_nancy` | `Standard-Interiors` | `master` | Yes — local-dev infra + docs |
 
 ---
 
@@ -217,64 +246,88 @@ Write-Host "=== All dependencies OK ==="
 
 All repos must be siblings in the same parent directory.
 
-**[BOTH]**
+**[MAC]**
 ```bash
-mkdir ~/NANCY && cd ~/NANCY
+mkdir -p ~/NANCY && cd ~/NANCY
 
-git clone https://github.com/Standard-Interiors/GeoffERP-API.git
-git clone https://github.com/Standard-Interiors/Geoff-ERP.git
-git clone https://github.com/Standard-Interiors/floorplan-backend.git
-git clone https://github.com/Standard-Interiors/seaming-frontend.git
-git clone https://github.com/Standard-Interiors/ordering-system.git
-git clone https://github.com/Standard-Interiors/local_nancy.git
+git clone https://github.com/laitkor-org/GeoffERP-API.git
+git clone https://github.com/laitkor-org/Geoff-ERP.git
+git clone https://github.com/laitkor-org/ordering-system.git
+git clone https://github.com/laitkor-org/seaming-frontend.git
+git clone https://github.com/laitkor-org/floorplan-backend.git
+git clone https://github.com/laitkor-org/GeoffQA.git
+git clone https://github.com/laitkor-org/geoff-automation-test.git
+
+# local-dev infra repo (different org)
+git clone https://github.com/Standard-Interiors/local_nancy.git local-dev
 ```
 
-**[WIN] Note:** If using PowerShell, `~` resolves to `C:\Users\<YourName>`. This works fine.
+**[WIN]**
+```powershell
+mkdir C:\Users\$env:USERNAME\NANCY
+cd C:\Users\$env:USERNAME\NANCY
 
-### Switch to the local dev branch
+git clone https://github.com/laitkor-org/GeoffERP-API.git
+git clone https://github.com/laitkor-org/Geoff-ERP.git
+git clone https://github.com/laitkor-org/ordering-system.git
+git clone https://github.com/laitkor-org/seaming-frontend.git
+git clone https://github.com/laitkor-org/floorplan-backend.git
+git clone https://github.com/laitkor-org/GeoffQA.git
+git clone https://github.com/laitkor-org/geoff-automation-test.git
 
-```bash
-cd ~/NANCY/GeoffERP-API     && git checkout local_dev_env
-cd ~/NANCY/Geoff-ERP        && git checkout local_dev_env
-cd ~/NANCY/floorplan-backend && git checkout local_dev_env
-cd ~/NANCY/seaming-frontend  && git checkout local_dev_env
-cd ~/NANCY/ordering-system   && git checkout local_dev_env
+# local-dev infra repo (different org)
+git clone https://github.com/Standard-Interiors/local_nancy.git local-dev
 ```
 
-### Get the local-dev directory
+> **If `git clone` fails with "Repository not found"**: GitHub masks private repos as 404 when unauthenticated. Sign in to GitHub in a browser, then run `gh auth setup-git` to register `gh` as the credential helper. Then retry.
 
-The `local-dev/` directory is NOT in git (it contains a 443 MB database dump). Get it from the team lead via USB, OneDrive, or internal file share.
+### Switch to the correct branches
 
-Place it at `~/NANCY/local-dev/` so the directory structure looks like:
+The `main` branches are stubs. The real app code lives on specific branches:
+
+```bash
+cd ~/NANCY/GeoffERP-API && git checkout staging
+cd ~/NANCY/Geoff-ERP    && git checkout develop
+cd ~/NANCY
+```
+
+The other 5 repos can stay on their default branch.
+
+### Place the database dump
+
+Put `GEOFFERPDB_LIVE_backup.sql` directly in the `NANCY/` folder (not in a subfolder):
+
+```
+NANCY/
+  GEOFFERPDB_LIVE_backup.sql    <-- here (423 MB)
+  GeoffERP-API/
+  Geoff-ERP/
+  local-dev/
+  ...
+```
+
+### Expected directory structure
 
 ```
 ~/NANCY/
-  GeoffERP-API/
-  Geoff-ERP/
-  floorplan-backend/
-  seaming-frontend/
-  ordering-system/
-  local_nancy/
-  local-dev/              <-- from team lead
-    docker-compose.yml
-    Caddyfile
-    Dockerfile.api
-    Dockerfile.floorplan
-    .env
-    appsettings.Local.json
-    restore-clean.sql     (443 MB)
-    auth-proxy/
-    d365bc-mock/
-    certs/
+  GEOFFERPDB_LIVE_backup.sql   <-- live DB dump from team lead
+  GeoffERP-API/                <-- branch: staging
+  Geoff-ERP/                   <-- branch: develop
+  floorplan-backend/           <-- branch: main (default)
+  seaming-frontend/            <-- branch: master (default)
+  ordering-system/             <-- branch: master (default)
+  GeoffQA/                     <-- branch: default (optional)
+  geoff-automation-test/       <-- branch: default (optional)
+  local-dev/                   <-- cloned from Standard-Interiors/local_nancy
 ```
 
-### Verify directory structure
+### Verify
 
 ```bash
 ls ~/NANCY/GeoffERP-API/GEOFF.API/Startup.cs && \
 ls ~/NANCY/Geoff-ERP/package.json && \
 ls ~/NANCY/floorplan-backend/requirements.txt && \
-ls ~/NANCY/local-dev/docker-compose.yml && \
+ls ~/NANCY/local-dev/ && \
 echo "Directory structure OK"
 ```
 
@@ -967,5 +1020,87 @@ Use **Azure Data Studio** (free, Mac + Windows) or **SSMS** (Windows only).
 | Authentication | SQL Login |
 | User | `sa` |
 | Password | `LocalDev123!` |
-| Database | `GeoffERP` |
+| Database | `GEOFFERPDB_LIVE` (Windows) or `GeoffERP` (Mac) |
 | Trust server certificate | Yes |
+
+---
+
+## Credentials summary
+
+| What | Value |
+|---|---|
+| App login (Windows setup) | `admin@local.dev` / `password123` |
+| App login (Mac setup) | `ashley@standardinteriors.com` / `LocalDev123!` |
+| SQL Server | `sa` / `LocalDev123!` |
+| MinIO | `minioadmin` / `minioadmin` |
+| JWT signing key (Windows) | `LocalDevJwtSecretKey2024!SuperSecure256Bit` |
+| JWT signing key (Mac) | `GeoffLocalDevKey_MustBe32CharsOrMore!` |
+
+None of these are used in production.
+
+---
+
+## Lessons learned (real problems from Windows setup)
+
+These are landmines discovered during real end-to-end setups on clean Windows machines. Most cost 30+ minutes to diagnose. If you hit something, check here first.
+
+### Prerequisites / environment
+
+1. **Git has no credential helper on Windows out of the box.** `git clone` returns "Repository not found" (not 403 — GitHub masks private repos). Fix: `gh auth setup-git`.
+
+2. **Docker Desktop requires WSL2 kernel separately.** The installer enables WSL but often doesn't install the kernel. Docker fails to start after reboot. Fix: `wsl --install --no-distribution` in admin PowerShell, reboot.
+
+3. **Docker stale processes after a crash.** Next launch shows "These processes are running" dialog. Click **Stop processes** — don't kill them from Task Manager.
+
+4. **`mcr.microsoft.com` has intermittent EOF errors.** Docker pulls from Microsoft occasionally fail mid-download. Just retry — usually works on attempt 2.
+
+### API compile errors on `staging` (pre-existing)
+
+The `staging` branch has **5 pre-existing compile errors** that block `dotnet publish`. None are caused by local dev — they're upstream bugs. All need hand-patching:
+
+| Error | File | Fix |
+|---|---|---|
+| Duplicate `ActivityLogModule` class | `GEOFF.BUSINESS/MasterModule/` and `AdminModule/AdminMaster/` | Rename `MasterModule/ActivityLogModule.cs` to `.bak` |
+| `MS_Store.Status` doesn't exist | `GEOFF.BUSINESS/AdminModule/AdminMaster/Store.cs` | Comment out the two lines that set/read `.Status` |
+| `Store` namespace shadows `Store` class | `GEOFF.API/Areas/Admin/MasterController.cs`, `StoreController.cs` | Add `using StoreBL = GEOFF.BUSINESSLAYER.AdminModule.AdminMaster.Store;` then swap references |
+| `Vendor` namespace shadows `Vendor` class | `GEOFF.API/Areas/ValueList/Controllers/VendorController.cs` | Same pattern — `using VendorBL = ...` |
+| `ActivityLogController` uses old namespace | `GEOFF.API/Areas/Master/Controllers/ActivityLogController.cs` | Change `GEOFF.CORE.ViewModel.Master` to `GEOFF.MODELS.ViewModel.AdminMaster` |
+| `GenerateJSONWebToken` signature mismatch | `GEOFF.API/Controllers/AuthenticationController.cs` | Add `using GEOFF.CORE.Class.Authorization;` and pass `new RoleAccess()` as 2nd arg |
+
+### ERP frontend (Geoff-ERP) — dependency pitfalls
+
+This took 12+ build attempts on Windows. Root causes in order of severity:
+
+1. **Missing `.dockerignore`** — host's stale `node_modules/` overwrites freshly installed one. Always create `.dockerignore` excluding `node_modules`, `package-lock.json`, `.git`.
+2. **`react-loading-overlay@1.0.1` is React 16 only** — peer dep black hole. Replace with inline `<ClipLoader>` wrapper.
+3. **`package-lock.json` on develop is pinned to react-scripts 4.x transitives** — don't copy it into the Docker image. Let npm resolve fresh.
+4. **CRA 5 treats deprecation warnings as errors** — set `SKIP_PREFLIGHT_CHECK`, `ESLINT_NO_DEV_ERRORS`, `GENERATE_SOURCEMAP=false` on the container.
+5. **`react-redux@9` requires `redux@5`** — incompatible with `redux-saga`. Pin to `^8.1.0`.
+6. **Don't remove `react-icons-kit`** — Header.jsx imports it even though it looks unused.
+7. **Drop the `postinstall` script** — it copies `es6-promise.map` from paths that don't exist in Docker.
+
+### Floorplan backend
+
+- **Port mismatch**: `config.py` hard-codes `PORT = 80`. Map `5008:80` and proxy to `floorplan:80`.
+- **boto3 `NoRegionError`**: Needs `AWS_DEFAULT_REGION` env var even when talking to MinIO. `AWS_REGION_S3` alone doesn't count.
+
+### Caddy / TLS
+
+- **mkcert CA must be re-installed per browser.** Run `mkcert -install` and fully close/reopen browser.
+- **`auto_https off`** in Caddyfile is essential — otherwise Caddy tries to get real Let's Encrypt certs and hangs.
+
+### Auth proxy
+
+- **Tokens sign with HS256 using the same key the API validates with.** If you change `JWT_KEY` in compose, also change `appsettings.Local.json` `JWTKey.Key`. They must match.
+
+### Database restore
+
+- **The live backup references AWS RDS paths** (`D:\rdsdbdata\DATA\...`). SQL Server restore fails without `sed` rewriting them to container paths.
+- **`restore-clean.sql` vs `GEOFFERPDB_LIVE_backup.sql`** — the "clean" one has no orders/contacts. If dashboard shows count tiles but tables are empty, you restored the wrong file.
+- **`sqlcmd` is at `/opt/mssql-tools18/bin/sqlcmd`** in the 2019-latest image (not `/opt/mssql-tools/bin/`).
+
+### Known non-blocking issues
+
+- **216 webpack deprecation warnings** on frontend startup — React 17-to-18 migration noise. Cosmetic.
+- **`/GetStore` returns 500** after login — doesn't block dashboard. Needs store-scoped JWT claim we don't send.
+- **`dev.mapy.s10drd.com/`** returns JSON placeholder — by design. Real endpoints are `/api/...`.
