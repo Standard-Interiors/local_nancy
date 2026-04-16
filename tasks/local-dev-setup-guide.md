@@ -1118,3 +1118,1644 @@ This took 12+ build attempts on Windows. Root causes in order of severity:
 - **216 webpack deprecation warnings** on frontend startup — React 17-to-18 migration noise. Cosmetic.
 - **`/GetStore` returns 500** after login — doesn't block dashboard. Needs store-scoped JWT claim we don't send.
 - **`dev.mapy.s10drd.com/`** returns JSON placeholder — by design. Real endpoints are `/api/...`.
+
+---
+
+### Adding the Three Critical Components to Windows
+
+This section adds three services that the Mac setup has but the Windows setup is missing: (1) the real-database auth-proxy replacing the fake 3-user stub, (2) the D365 Business Central mock service, and (3) the minio-init one-shot container that auto-creates the S3 bucket.
+
+**Prerequisites:** You are in the `NANCY\local-dev\` directory. Docker Desktop with WSL2 is running. SQL Server is up with the `GEOFFERPDB_LIVE` database seeded.
+
+---
+
+#### Component 1: Real User DB Auth (auth-proxy)
+
+The current auth-proxy uses a simple `server.js` with three hardcoded fake users. This replaces it with the full implementation that queries the real `MS_User` table, seeds all users with bcrypt-hashed passwords, and generates proper JWTs with AES-encrypted claims.
+
+**Step 1a: Delete the old auth-proxy directory and create the new structure**
+
+```powershell
+# Remove old auth-proxy contents
+Remove-Item -Recurse -Force .\auth-proxy -ErrorAction SilentlyContinue
+
+# Create directory structure
+New-Item -ItemType Directory -Force -Path .\auth-proxy\src\services
+New-Item -ItemType Directory -Force -Path .\auth-proxy\src\routes
+New-Item -ItemType Directory -Force -Path .\auth-proxy\src\middleware
+```
+
+**Step 1b: Create `auth-proxy\Dockerfile`**
+
+```powershell
+@'
+FROM node:18-slim
+
+WORKDIR /app
+
+COPY package.json ./
+RUN npm install --production
+
+COPY src/ ./src/
+
+EXPOSE 3100
+
+HEALTHCHECK --interval=15s --timeout=5s --retries=3 --start-period=30s \
+  CMD wget -q --spider http://localhost:3100/health || exit 1
+
+CMD ["node", "src/index.js"]
+'@ | Set-Content -Path .\auth-proxy\Dockerfile -Encoding UTF8
+```
+
+**Step 1c: Create `auth-proxy\package.json`**
+
+```powershell
+@'
+{
+  "name": "geoff-auth-proxy",
+  "version": "1.0.0",
+  "description": "Local auth proxy for Geoff ERP — replaces AWS Cognito for local development",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "express": "^4.18.2",
+    "jsonwebtoken": "^9.0.2",
+    "mssql": "^10.0.2",
+    "uuid": "^9.0.0"
+  }
+}
+'@ | Set-Content -Path .\auth-proxy\package.json -Encoding UTF8
+```
+
+**Step 1d: Create `auth-proxy\src\index.js`**
+
+```powershell
+@'
+const express = require('express');
+const { connectWithRetry } = require('./services/db');
+const { validateConfig } = require('./services/jwt');
+const { runSeed } = require('./services/seedUsers');
+const { errorHandler } = require('./middleware/errorHandler');
+
+const PORT = parseInt(process.env.AUTH_PROXY_PORT || '3100');
+
+async function start() {
+  console.log('=== Geoff Auth Proxy (Local Dev) ===');
+
+  validateConfig();
+  console.log('[STARTUP] JWT config OK');
+
+  await connectWithRetry();
+
+  console.log('[STARTUP] Seeding local auth users...');
+  await runSeed();
+
+  const app = express();
+  app.use(express.json({ limit: '10mb' }));
+
+  // CORS
+  app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    if (req.method === 'OPTIONS') return res.sendStatus(204);
+    next();
+  });
+
+  // Request logging
+  app.use((req, res, next) => {
+    if (req.path !== '/health') console.log(`[REQ] ${req.method} ${req.path}`);
+    next();
+  });
+
+  // Routes
+  app.use(require('./routes/customerSignIn'));
+  app.use(require('./routes/signIn'));
+  app.use(require('./routes/crossDomain'));
+  app.use(require('./routes/health'));
+
+  app.use(errorHandler);
+
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`[STARTUP] Listening on port ${PORT}`);
+    console.log(`[STARTUP] Default password: ${process.env.DEFAULT_PASSWORD || 'LocalDev123!'}`);
+  });
+}
+
+start().catch(err => { console.error('[FATAL]', err.message); process.exit(1); });
+'@ | Set-Content -Path .\auth-proxy\src\index.js -Encoding UTF8
+```
+
+**Step 1e: Create `auth-proxy\src\services\db.js`**
+
+```powershell
+@'
+const sql = require('mssql');
+
+const config = {
+  server: process.env.DB_HOST || 'sqlserver',
+  port: parseInt(process.env.DB_PORT || '1433'),
+  database: process.env.DB_NAME || 'GeoffERP',
+  user: process.env.DB_USER || 'sa',
+  password: process.env.DB_PASSWORD || 'LocalDev123!',
+  options: {
+    encrypt: false,
+    trustServerCertificate: true,
+    enableArithAbort: true,
+  },
+  pool: { max: 10, min: 0, idleTimeoutMillis: 30000 },
+};
+
+let pool = null;
+
+async function getPool() {
+  if (pool) return pool;
+  pool = await sql.connect(config);
+  return pool;
+}
+
+async function connectWithRetry(maxRetries = 30, delayMs = 3000) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      pool = await sql.connect(config);
+      console.log(`[DB] Connected to ${config.server}:${config.port}/${config.database}`);
+      return pool;
+    } catch (err) {
+      console.log(`[DB] Attempt ${attempt}/${maxRetries}: ${err.message}`);
+      if (attempt === maxRetries) {
+        throw new Error(`AUTH_PROXY FATAL: Cannot connect to SQL Server after ${maxRetries} attempts.`);
+      }
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+  }
+}
+
+async function query(sqlText, params = {}) {
+  const p = await getPool();
+  const request = p.request();
+  for (const [key, value] of Object.entries(params)) {
+    request.input(key, value);
+  }
+  return request.query(sqlText);
+}
+
+module.exports = { connectWithRetry, getPool, query, sql };
+'@ | Set-Content -Path .\auth-proxy\src\services\db.js -Encoding UTF8
+```
+
+**Step 1f: Create `auth-proxy\src\services\jwt.js`**
+
+```powershell
+@'
+const jsonwebtoken = require('jsonwebtoken');
+const { v4: uuidv4 } = require('uuid');
+const { encrypt } = require('./crypto');
+
+const JWT_KEY = process.env.JWT_KEY || 'GeoffLocalDevKey_MustBe32CharsOrMore!';
+const JWT_ISSUER = process.env.JWT_ISSUER || 'https://dev.api.s10drd.com';
+const JWT_AUDIENCE = process.env.JWT_AUDIENCE || 'geoff-local';
+
+function validateConfig() {
+  if (!JWT_KEY || JWT_KEY.length < 32) {
+    throw new Error('AUTH_PROXY FATAL: JWT_KEY must be >= 32 characters.');
+  }
+}
+
+function generateToken(userName, storeId, userId) {
+  return jsonwebtoken.sign(
+    {
+      jti: uuidv4(),
+      valid: '1',
+      store: encrypt(String(storeId)),
+      uName: encrypt(String(userName)),
+      uId: encrypt(String(userId)),
+    },
+    JWT_KEY,
+    { algorithm: 'HS256', issuer: JWT_ISSUER, audience: JWT_AUDIENCE, expiresIn: 3600 }
+  );
+}
+
+module.exports = { generateToken, validateConfig };
+'@ | Set-Content -Path .\auth-proxy\src\services\jwt.js -Encoding UTF8
+```
+
+**Step 1g: Create `auth-proxy\src\services\crypto.js`**
+
+```powershell
+@'
+const crypto = require('crypto');
+
+const AES_KEY = process.env.AES_KEY || '1234567890123456';
+const AES_IV = process.env.AES_IV || '1234567890123456';
+
+function decrypt(base64Ciphertext) {
+  const key = Buffer.from(AES_KEY, 'utf8');
+  const iv = Buffer.from(AES_IV, 'utf8');
+  const ciphertext = Buffer.from(base64Ciphertext, 'base64');
+  const decipher = crypto.createDecipheriv('aes-128-cbc', key, iv);
+  decipher.setAutoPadding(true);
+  let decrypted = decipher.update(ciphertext, undefined, 'utf8');
+  decrypted += decipher.final('utf8');
+  return decrypted;
+}
+
+function encrypt(plaintext) {
+  const key = Buffer.from(AES_KEY, 'utf8');
+  const iv = Buffer.from(AES_IV, 'utf8');
+  const cipher = crypto.createCipheriv('aes-128-cbc', key, iv);
+  cipher.setAutoPadding(true);
+  let encrypted = cipher.update(plaintext, 'utf8');
+  encrypted = Buffer.concat([encrypted, cipher.final()]);
+  return encrypted.toString('base64');
+}
+
+module.exports = { encrypt, decrypt };
+'@ | Set-Content -Path .\auth-proxy\src\services\crypto.js -Encoding UTF8
+```
+
+**Step 1h: Create `auth-proxy\src\services\seedUsers.js`**
+
+```powershell
+@'
+const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
+const { query } = require('./db');
+
+const DEFAULT_PASSWORD = process.env.DEFAULT_PASSWORD || 'LocalDev123!';
+
+async function ensureTable() {
+  const check = await query(`SELECT OBJECT_ID('MS_User', 'U') AS tbl_id`);
+  if (check.recordset[0].tbl_id === null) {
+    console.log('[SEED] MS_User table not found — DB snapshot not yet restored. Skipping.');
+    return false;
+  }
+
+  await query(`
+    IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'local_auth_users')
+    BEGIN
+      CREATE TABLE local_auth_users (
+        UserId        INT PRIMARY KEY,
+        password_hash NVARCHAR(200) NOT NULL,
+        hash_key      NVARCHAR(200) NULL,
+        created_at    DATETIME2 DEFAULT GETDATE(),
+        CONSTRAINT FK_local_auth_MS_User FOREIGN KEY (UserId) REFERENCES MS_User(UserId)
+      );
+    END
+  `);
+  return true;
+}
+
+function generateHashKey(userId, email) {
+  return crypto.createHash('sha256')
+    .update(`local-hash-${userId}-${email}`)
+    .digest('hex').substring(0, 64);
+}
+
+async function seedMissingUsers() {
+  const result = await query(`
+    SELECT u.UserId, u.Email
+    FROM MS_User u
+    LEFT JOIN local_auth_users la ON u.UserId = la.UserId
+    WHERE la.UserId IS NULL AND u.IsDeleted = 0 AND u.Email IS NOT NULL AND u.Email != ''
+  `);
+
+  if (result.recordset.length === 0) {
+    console.log('[SEED] All users already seeded.');
+    return 0;
+  }
+
+  const passwordHash = await bcrypt.hash(DEFAULT_PASSWORD, 10);
+  let seeded = 0;
+  for (const user of result.recordset) {
+    try {
+      await query(
+        `INSERT INTO local_auth_users (UserId, password_hash, hash_key) VALUES (@userId, @passwordHash, @hashKey)`,
+        { userId: user.UserId, passwordHash, hashKey: generateHashKey(user.UserId, user.Email) }
+      );
+      seeded++;
+    } catch (err) {
+      // skip duplicates
+    }
+  }
+  console.log(`[SEED] Seeded ${seeded} users with password "${DEFAULT_PASSWORD}"`);
+  return seeded;
+}
+
+async function runSeed() {
+  try {
+    const ready = await ensureTable();
+    if (ready) await seedMissingUsers();
+  } catch (err) {
+    console.log(`[SEED] WARNING: ${err.message}`);
+    console.log('[SEED] Auth proxy will start anyway — restore DB and restart to seed.');
+  }
+}
+
+module.exports = { runSeed };
+'@ | Set-Content -Path .\auth-proxy\src\services\seedUsers.js -Encoding UTF8
+```
+
+**Step 1i: Create `auth-proxy\src\services\userLookup.js`**
+
+```powershell
+@'
+const { query } = require('./db');
+
+// Real schema: MS_User has Email (not EmailId), no StoreId, no IsActive
+async function findUserByEmail(email) {
+  const result = await query(
+    `SELECT u.UserId, u.UserName, u.Email, u.RoleId, u.IsDeleted, u.IsAdminAccess,
+            la.password_hash, la.hash_key
+     FROM MS_User u
+     LEFT JOIN local_auth_users la ON u.UserId = la.UserId
+     WHERE u.Email = @email`,
+    { email }
+  );
+  return result.recordset[0] || null;
+}
+
+async function findUserByHashKey(hashKey) {
+  const result = await query(
+    `SELECT u.UserId, u.UserName, u.Email, u.RoleId, u.IsDeleted, u.IsAdminAccess,
+            la.password_hash, la.hash_key
+     FROM MS_User u
+     INNER JOIN local_auth_users la ON u.UserId = la.UserId
+     WHERE la.hash_key = @hashKey`,
+    { hashKey }
+  );
+  return result.recordset[0] || null;
+}
+
+async function findUserById(userId) {
+  const result = await query(
+    `SELECT u.UserId, u.UserName, u.Email, u.RoleId, u.IsDeleted, u.IsAdminAccess,
+            la.password_hash, la.hash_key
+     FROM MS_User u
+     LEFT JOIN local_auth_users la ON u.UserId = la.UserId
+     WHERE u.UserId = @userId`,
+    { userId }
+  );
+  return result.recordset[0] || null;
+}
+
+module.exports = { findUserByEmail, findUserByHashKey, findUserById };
+'@ | Set-Content -Path .\auth-proxy\src\services\userLookup.js -Encoding UTF8
+```
+
+**Step 1j: Create `auth-proxy\src\routes\signIn.js`**
+
+```powershell
+@'
+const express = require('express');
+const bcrypt = require('bcryptjs');
+const { findUserByEmail } = require('../services/userLookup');
+const { generateToken } = require('../services/jwt');
+const { decrypt } = require('../services/crypto');
+const { authError } = require('../middleware/errorHandler');
+const router = express.Router();
+
+// POST /Authentication/api/Login/SignIn  AND  POST /api/Auth/SignIn
+// Used by: Geoff-ERP React app (AES-encrypted credentials)
+async function handleSignIn(req, res, next) {
+  try {
+    let emailId, password;
+    // Try AES-decrypt first (production flow). If that fails, assume plaintext (Geoff-ERP React app).
+    try {
+      emailId = decrypt(req.body.EmailId);
+      password = decrypt(req.body.Password);
+    } catch (e) {
+      emailId = req.body.EmailId;
+      password = req.body.Password;
+      if (!emailId || !password) {
+        throw authError(400, `Missing EmailId or Password. Error: ${e.message}`);
+      }
+      console.log(`[AUTH] SignIn using plaintext payload`);
+    }
+
+    console.log(`[AUTH] SignIn: ${emailId}`);
+    const user = await findUserByEmail(emailId);
+
+    if (!user) throw authError(401, `No user with email '${emailId}'.`);
+    if (user.IsDeleted) throw authError(401, `User '${emailId}' is deleted.`);
+    if (!user.password_hash) throw authError(401, `User '${emailId}' has no local password. Restart auth-proxy.`);
+
+    const valid = await bcrypt.compare(password, user.password_hash);
+    if (!valid) throw authError(401, `Invalid password for '${emailId}'. Default: LocalDev123!`);
+
+    const token = generateToken(user.UserName || user.Email, 1, user.UserId);
+    console.log(`[AUTH] SignIn OK: ${emailId}`);
+
+    res.json({
+      message: 'Success',
+      result: [{
+        token,
+        userId: user.UserId,
+        roleid: user.RoleId || 1,
+        isAdminAccess: user.IsAdminAccess || false,
+        hashKey: user.hash_key || '',
+        userName: user.UserName || '',
+        emailId: user.Email,
+        uniqueChannelName: `local-channel-${user.UserId}`,
+      }],
+      error: null,
+    });
+  } catch (err) { next(err); }
+}
+
+router.post('/Authentication/api/Login/SignIn', handleSignIn);
+router.post('/authentication/api/login/SignIn', handleSignIn);
+router.post('/authentication/api/login/signin', handleSignIn);
+router.post('/api/Auth/SignIn', handleSignIn);
+router.post('/api/Auth/signin', handleSignIn);
+
+module.exports = router;
+'@ | Set-Content -Path .\auth-proxy\src\routes\signIn.js -Encoding UTF8
+```
+
+**Step 1k: Create `auth-proxy\src\routes\customerSignIn.js`**
+
+```powershell
+@'
+const express = require('express');
+const bcrypt = require('bcryptjs');
+const { findUserByEmail } = require('../services/userLookup');
+const { generateToken } = require('../services/jwt');
+const { authError } = require('../middleware/errorHandler');
+const router = express.Router();
+
+// POST /authentication/api/login/CustomerSignIn
+// Used by: ordering-system (plaintext credentials)
+router.post('/authentication/api/login/CustomerSignIn', async (req, res, next) => {
+  try {
+    const { EmailId, Password } = req.body;
+    if (!EmailId || !Password) throw authError(400, 'EmailId and Password are required.');
+
+    console.log(`[AUTH] CustomerSignIn: ${EmailId}`);
+    const user = await findUserByEmail(EmailId);
+
+    if (!user) throw authError(401, `No user with email '${EmailId}'. Was the DB restored?`);
+    if (user.IsDeleted) throw authError(401, `User '${EmailId}' is deleted.`);
+    if (!user.password_hash) throw authError(401, `User '${EmailId}' has no local password. Restart auth-proxy to seed.`);
+
+    const valid = await bcrypt.compare(Password, user.password_hash);
+    if (!valid) throw authError(401, `Invalid password for '${EmailId}'. Default: LocalDev123!`);
+
+    const token = generateToken(user.UserName || user.Email, 1, user.UserId);
+    console.log(`[AUTH] CustomerSignIn OK: ${EmailId} (userId=${user.UserId})`);
+
+    res.json({
+      message: 'Success',
+      result: [{
+        token,
+        userId: user.UserId,
+        roleid: user.RoleId || 1,
+        isAdminAccess: user.IsAdminAccess || false,
+        hashKey: user.hash_key || '',
+        userName: user.UserName || '',
+        emailId: user.Email,
+        uniqueChannelName: `local-channel-${user.UserId}`,
+      }],
+      error: null,
+    });
+  } catch (err) { next(err); }
+});
+
+module.exports = router;
+'@ | Set-Content -Path .\auth-proxy\src\routes\customerSignIn.js -Encoding UTF8
+```
+
+**Step 1l: Create `auth-proxy\src\routes\crossDomain.js`**
+
+```powershell
+@'
+const express = require('express');
+const { findUserByHashKey, findUserById } = require('../services/userLookup');
+const { generateToken } = require('../services/jwt');
+const { authError } = require('../middleware/errorHandler');
+const router = express.Router();
+
+// POST /authentication/api/login/CrossDomainAuthentication?LoginLink=<hash>
+// Used by: seaming-frontend and ordering-system
+router.post('/authentication/api/login/CrossDomainAuthentication', async (req, res, next) => {
+  try {
+    const loginLink = req.query.LoginLink || req.query.loginlink || '';
+    if (!loginLink) throw authError(400, 'LoginLink query parameter is required.');
+
+    console.log(`[AUTH] CrossDomain: hash=${loginLink.substring(0, 16)}...`);
+
+    let user = await findUserByHashKey(loginLink);
+    if (!user && /^\d+$/.test(loginLink)) user = await findUserById(parseInt(loginLink));
+    if (!user) throw authError(401, `No user found for LoginLink '${loginLink.substring(0, 20)}...'.`);
+    if (user.IsDeleted) throw authError(401, `User '${user.Email}' is deleted.`);
+
+    const token = generateToken(user.UserName || user.Email, 1, user.UserId);
+    console.log(`[AUTH] CrossDomain OK: ${user.Email} (userId=${user.UserId})`);
+
+    res.json({ message: 'Success', result: [{ token, userId: user.UserId }], error: null });
+  } catch (err) { next(err); }
+});
+
+module.exports = router;
+'@ | Set-Content -Path .\auth-proxy\src\routes\crossDomain.js -Encoding UTF8
+```
+
+**Step 1m: Create `auth-proxy\src\routes\health.js`**
+
+```powershell
+@'
+const express = require('express');
+const { getPool } = require('../services/db');
+const router = express.Router();
+
+router.get('/health', async (req, res) => {
+  try {
+    const pool = await getPool();
+    await pool.request().query('SELECT 1');
+    res.json({ status: 'ok', db: 'connected' });
+  } catch (err) {
+    res.status(503).json({ status: 'error', db: err.message });
+  }
+});
+
+module.exports = router;
+'@ | Set-Content -Path .\auth-proxy\src\routes\health.js -Encoding UTF8
+```
+
+**Step 1n: Create `auth-proxy\src\middleware\errorHandler.js`**
+
+```powershell
+@'
+function errorHandler(err, req, res, next) {
+  console.error(`[ERROR] ${req.method} ${req.path}: ${err.message}`);
+  res.status(err.statusCode || 500).json({
+    message: 'Failed',
+    result: null,
+    error: err.message,
+  });
+}
+
+function authError(statusCode, message) {
+  const err = new Error(message);
+  err.statusCode = statusCode;
+  return err;
+}
+
+module.exports = { errorHandler, authError };
+'@ | Set-Content -Path .\auth-proxy\src\middleware\errorHandler.js -Encoding UTF8
+```
+
+**Step 1o: Update the `.env` file -- change `DB_NAME` to match your Windows database**
+
+The `.env` ships with `DB_NAME=GeoffERP` but your Windows SQL Server uses `GEOFFERPDB_LIVE`. Fix it:
+
+```powershell
+(Get-Content .\.env) -replace '^DB_NAME=.*$', 'DB_NAME=GEOFFERPDB_LIVE' | Set-Content .\.env -Encoding UTF8
+```
+
+Verify:
+
+```powershell
+Select-String -Path .\.env -Pattern 'DB_NAME'
+```
+
+You should see `DB_NAME=GEOFFERPDB_LIVE`.
+
+**Step 1p: Also update the connection string in `appsettings.Local.json`**
+
+The API's connection string must point to the same database. Open `appsettings.Local.json` and change the `geoffConn` database from `GeoffERP` to `GEOFFERPDB_LIVE`:
+
+```powershell
+(Get-Content .\appsettings.Local.json) -replace 'Database=GeoffERP', 'Database=GEOFFERPDB_LIVE' | Set-Content .\appsettings.Local.json -Encoding UTF8
+```
+
+**Step 1q: Update the `auth-proxy` service in `docker-compose.yml`**
+
+Replace the existing `auth-proxy` service block. The key changes: `env_file: .env` instead of inline environment vars, and `depends_on: sqlserver` with `condition: service_healthy` instead of `depends_on: api`.
+
+Find your existing `auth-proxy:` block in `docker-compose.yml` and replace it entirely with:
+
+```yaml
+  auth-proxy:
+    build:
+      context: ./auth-proxy
+    container_name: geoff-auth-proxy
+    ports:
+      - "3100:3100"
+    env_file:
+      - .env
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3100/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+```
+
+**Step 1r: Rebuild and verify auth-proxy**
+
+```powershell
+docker compose build auth-proxy
+docker compose up -d auth-proxy
+# Wait for it to become healthy
+Start-Sleep -Seconds 15
+docker compose ps auth-proxy
+# Test the health endpoint
+docker exec geoff-auth-proxy wget -qO- http://localhost:3100/health
+```
+
+Expected output from health: `{"status":"ok","db":"connected"}`
+
+Test a login (replace with a real email from your `MS_User` table, or use any email that exists):
+
+```powershell
+Invoke-RestMethod -Uri "http://localhost:3100/api/Auth/SignIn" -Method POST -ContentType "application/json" -Body '{"EmailId":"admin@test.com","Password":"LocalDev123!"}'
+```
+
+A successful response will have `"message":"Success"` with a token in `result[0].token`.
+
+---
+
+#### Component 2: D365 Business Central Mock
+
+This is a medium-fidelity mock of Microsoft Dynamics 365 Business Central. It provides in-memory endpoints for items, customers, sales orders, salespersons, commissions, price lists, batch operations, and OAuth token issuance. Without it, any code path in NANCY that syncs to D365BC will fail.
+
+**Step 2a: Create the directory structure**
+
+```powershell
+New-Item -ItemType Directory -Force -Path .\d365bc-mock\src\middleware
+New-Item -ItemType Directory -Force -Path .\d365bc-mock\src\routes
+```
+
+**Step 2b: Create `d365bc-mock\Dockerfile`**
+
+```powershell
+@'
+FROM node:18-slim
+
+WORKDIR /app
+
+COPY package.json ./
+RUN npm install --production --no-audit --no-fund
+
+COPY src ./src
+
+EXPOSE 3200
+
+HEALTHCHECK --interval=10s --timeout=5s --retries=5 \
+  CMD wget -qO- http://localhost:3200/health || exit 1
+
+CMD ["node", "src/index.js"]
+'@ | Set-Content -Path .\d365bc-mock\Dockerfile -Encoding UTF8
+```
+
+**Step 2c: Create `d365bc-mock\package.json`**
+
+```powershell
+@'
+{
+  "name": "d365bc-mock",
+  "version": "1.0.0",
+  "description": "Medium-fidelity mock of Microsoft Dynamics 365 Business Central for local development",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "uuid": "^9.0.0"
+  }
+}
+'@ | Set-Content -Path .\d365bc-mock\package.json -Encoding UTF8
+```
+
+**Step 2d: Create `d365bc-mock\src\index.js`**
+
+```powershell
+@'
+const express = require('express');
+const { stats } = require('./store');
+const { acceptBearer } = require('./middleware/auth');
+const { requestLogger } = require('./middleware/logger');
+
+const PORT = parseInt(process.env.PORT || '3200');
+
+const app = express();
+
+// JSON body for normal requests
+app.use(express.json({ limit: '50mb' }));
+// URL-encoded for OAuth token requests
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+// Raw binary body for picture uploads (only when content-type is image/*)
+app.use((req, res, next) => {
+  const ct = req.headers['content-type'] || '';
+  if (ct.startsWith('image/') || ct === 'application/octet-stream') {
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => { req.body = Buffer.concat(chunks); next(); });
+    req.on('error', next);
+    return;
+  }
+  next();
+});
+
+app.use(requestLogger);
+
+// Health check (no auth required)
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', service: 'd365bc-mock', stats: stats() });
+});
+
+// Admin stats (for developers — visible state of the mock)
+app.get('/_admin/stats', (req, res) => {
+  res.json(stats());
+});
+
+// Token endpoint (no auth required — this IS the auth)
+app.use(require('./routes/token'));
+
+// All other BC endpoints — accept any Bearer token
+app.use(acceptBearer);
+app.use(require('./routes/items'));
+app.use(require('./routes/customers'));
+app.use(require('./routes/sales'));
+app.use(require('./routes/salespersons'));
+app.use(require('./routes/commissions'));
+app.use(require('./routes/pricelist'));
+app.use(require('./routes/batch'));
+app.use(require('./routes/bcCallback'));
+
+// Fallback — log and 404
+app.use((req, res) => {
+  console.log(`[404] ${req.method} ${req.originalUrl}`);
+  res.status(404).json({
+    error: {
+      code: 'ResourceNotFound',
+      message: `Mock does not handle: ${req.method} ${req.originalUrl}`,
+    },
+  });
+});
+
+// Error handler
+app.use((err, req, res, next) => {
+  console.error('[ERROR]', err);
+  res.status(500).json({ error: { code: 'InternalError', message: err.message } });
+});
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log('=== D365BC Mock Service ===');
+  console.log(`Listening on port ${PORT}`);
+  console.log(`Health: http://localhost:${PORT}/health`);
+  console.log(`Stats:  http://localhost:${PORT}/_admin/stats`);
+});
+'@ | Set-Content -Path .\d365bc-mock\src\index.js -Encoding UTF8
+```
+
+**Step 2e: Create `d365bc-mock\src\store.js`**
+
+```powershell
+@'
+// In-memory data store for D365BC mock
+// Mirrors what a real BC instance would persist
+
+const { v4: uuid } = require('uuid');
+
+const store = {
+  // items keyed by "source:nancyID" (e.g., "Product:123" or "Labor:456")
+  items: new Map(),
+  // customers keyed by nancyID
+  customers: new Map(),
+  // sales orders keyed by jobNo (or "Order:jobNo")
+  salesOrders: new Map(),
+  // salespersons keyed by code
+  salespersons: new Map(),
+  // commissions — list, newest first
+  commissions: [],
+  // audit log of every mutating request (for debugging / admin visibility)
+  requestLog: [],
+  // OAuth tokens issued — just for bookkeeping, all accepted
+  tokens: new Map(),
+};
+
+function logRequest(method, path, status, body) {
+  store.requestLog.unshift({
+    at: new Date().toISOString(),
+    method,
+    path,
+    status,
+    bodyPreview: body ? JSON.stringify(body).substring(0, 200) : null,
+  });
+  if (store.requestLog.length > 500) store.requestLog.pop();
+}
+
+// ---------- Items ----------
+function putItem(source, nancyID, data) {
+  const key = `${source}:${nancyID}`;
+  const existing = store.items.get(key);
+  const bcId = existing?._bcId || uuid();
+  const etag = uuid();
+  const item = {
+    ...data,
+    id: bcId,
+    nancyERPSource: source,
+    nancyID: Number(nancyID),
+    _bcId: bcId,
+    _etag: etag,
+    _updatedAt: new Date().toISOString(),
+  };
+  store.items.set(key, item);
+  return item;
+}
+
+function getItem(source, nancyID) {
+  return store.items.get(`${source}:${nancyID}`) || null;
+}
+
+function queryItems(filter) {
+  // Minimal OData $filter support: "nancyID eq 123"
+  const match = filter?.match(/nancyID\s+eq\s+(\d+)/i);
+  if (match) {
+    const id = Number(match[1]);
+    return [...store.items.values()].filter(i => i.nancyID === id);
+  }
+  return [...store.items.values()];
+}
+
+function getItemByBcId(bcId) {
+  return [...store.items.values()].find(i => i._bcId === bcId) || null;
+}
+
+function updateItemPicture(bcId, contentType, dataBuf) {
+  const item = getItemByBcId(bcId);
+  if (!item) return null;
+  item._picture = {
+    contentType,
+    size: dataBuf?.length || 0,
+    etag: uuid(),
+    updatedAt: new Date().toISOString(),
+  };
+  item._etag = uuid();
+  return item;
+}
+
+// ---------- Customers ----------
+function putCustomer(nancyID, data) {
+  const existing = store.customers.get(Number(nancyID));
+  const bcId = existing?._bcId || uuid();
+  const customer = {
+    ...data,
+    id: bcId,
+    nancyID: Number(nancyID),
+    _bcId: bcId,
+    _etag: uuid(),
+    _updatedAt: new Date().toISOString(),
+  };
+  store.customers.set(Number(nancyID), customer);
+  return customer;
+}
+
+function getCustomer(nancyID) {
+  return store.customers.get(Number(nancyID)) || null;
+}
+
+// ---------- Sales Orders ----------
+function putSalesOrder(order) {
+  const jobNo = order.jobNo;
+  if (!jobNo) throw new Error('jobNo required');
+  const existing = store.salesOrders.get(jobNo);
+  const bcId = existing?._bcId || uuid();
+  const stored = {
+    ...order,
+    id: bcId,
+    _bcId: bcId,
+    _status: existing?._status || 'open',
+    _etag: uuid(),
+    _createdAt: existing?._createdAt || new Date().toISOString(),
+    _updatedAt: new Date().toISOString(),
+  };
+  store.salesOrders.set(jobNo, stored);
+  return stored;
+}
+
+function releaseSalesOrder(jobNo) {
+  const order = store.salesOrders.get(jobNo);
+  if (!order) return null;
+  order._status = 'released';
+  order._releasedAt = new Date().toISOString();
+  order._etag = uuid();
+  return order;
+}
+
+function deleteSalesOrder(jobNo) {
+  const existed = store.salesOrders.has(jobNo);
+  store.salesOrders.delete(jobNo);
+  return existed;
+}
+
+function getSalesOrder(jobNo) {
+  return store.salesOrders.get(jobNo) || null;
+}
+
+// ---------- Salespersons ----------
+function putSalesperson(code, data) {
+  const rec = { ...data, code, _updatedAt: new Date().toISOString() };
+  store.salespersons.set(code, rec);
+  return rec;
+}
+
+function getSalesperson(code) {
+  return store.salespersons.get(code) || null;
+}
+
+// ---------- Commissions ----------
+function addCommission(data) {
+  const rec = { id: uuid(), ...data, _createdAt: new Date().toISOString() };
+  store.commissions.unshift(rec);
+  if (store.commissions.length > 1000) store.commissions.pop();
+  return rec;
+}
+
+// ---------- Tokens ----------
+function issueToken(clientId) {
+  const token = `mock-bc-${uuid()}`;
+  store.tokens.set(token, {
+    clientId: clientId || 'mock-client',
+    issuedAt: Date.now(),
+    expiresIn: 3600,
+  });
+  return token;
+}
+
+// ---------- Stats / inspection ----------
+function stats() {
+  return {
+    items: store.items.size,
+    customers: store.customers.size,
+    salesOrders: store.salesOrders.size,
+    ordersReleased: [...store.salesOrders.values()].filter(o => o._status === 'released').length,
+    salespersons: store.salespersons.size,
+    commissions: store.commissions.length,
+    tokens: store.tokens.size,
+    recentRequests: store.requestLog.slice(0, 20),
+  };
+}
+
+module.exports = {
+  store,
+  logRequest,
+  putItem, getItem, queryItems, getItemByBcId, updateItemPicture,
+  putCustomer, getCustomer,
+  putSalesOrder, releaseSalesOrder, deleteSalesOrder, getSalesOrder,
+  putSalesperson, getSalesperson,
+  addCommission,
+  issueToken,
+  stats,
+};
+'@ | Set-Content -Path .\d365bc-mock\src\store.js -Encoding UTF8
+```
+
+**Step 2f: Create `d365bc-mock\src\middleware\auth.js`**
+
+```powershell
+@'
+// Mock auth — accept any Bearer token. Log missing tokens as warnings.
+function acceptBearer(req, res, next) {
+  const authHeader = req.headers.authorization || '';
+  const match = authHeader.match(/^Bearer\s+(.+)$/i);
+  if (!match) {
+    console.warn(`[AUTH] ${req.method} ${req.path} — no Bearer token (accepting anyway for mock)`);
+    req.bcToken = null;
+  } else {
+    req.bcToken = match[1];
+  }
+  next();
+}
+
+module.exports = { acceptBearer };
+'@ | Set-Content -Path .\d365bc-mock\src\middleware\auth.js -Encoding UTF8
+```
+
+**Step 2g: Create `d365bc-mock\src\middleware\logger.js`**
+
+```powershell
+@'
+const { logRequest } = require('../store');
+
+function requestLogger(req, res, next) {
+  const start = Date.now();
+  res.on('finish', () => {
+    const ms = Date.now() - start;
+    console.log(`[REQ] ${req.method} ${req.path} → ${res.statusCode} (${ms}ms)`);
+    if (req.method !== 'GET' && req.path !== '/health') {
+      logRequest(req.method, req.path, res.statusCode, req.body);
+    }
+  });
+  next();
+}
+
+module.exports = { requestLogger };
+'@ | Set-Content -Path .\d365bc-mock\src\middleware\logger.js -Encoding UTF8
+```
+
+**Step 2h: Create `d365bc-mock\src\routes\token.js`**
+
+```powershell
+@'
+const express = require('express');
+const { issueToken } = require('../store');
+const router = express.Router();
+
+// Microsoft OAuth2 token endpoint
+// Real: https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token
+// Mock: http://d365bc-mock:3200/:tenant/oauth2/v2.0/token (we accept both path shapes)
+function handleToken(req, res) {
+  const clientId = req.body.client_id || req.query.client_id;
+  const token = issueToken(clientId);
+  res.json({
+    token_type: 'Bearer',
+    expires_in: 3600,
+    ext_expires_in: 3600,
+    access_token: token,
+  });
+}
+
+router.post('/:tenant/oauth2/v2.0/token', handleToken);
+router.post('/oauth2/v2.0/:tenant/token', handleToken);
+router.post('/common/oauth2/v2.0/token', handleToken);
+
+module.exports = router;
+'@ | Set-Content -Path .\d365bc-mock\src\routes\token.js -Encoding UTF8
+```
+
+**Step 2i: Create `d365bc-mock\src\routes\items.js`**
+
+```powershell
+@'
+const express = require('express');
+const { putItem, getItem, queryItems, getItemByBcId, updateItemPicture } = require('../store');
+const router = express.Router();
+
+// --- Create item (POST .../items)
+router.post(
+  /^\/v2\.0\/[^/]+\/[^/]+\/api\/standardInteriors\/nancyERP\/v1\.0\/companies\([^)]+\)\/items$/,
+  (req, res) => {
+    const body = req.body;
+    const source = body.nancyERPSource;
+    const nancyID = body.nancyID;
+    if (!source || nancyID == null) {
+      return res.status(400).json({
+        error: { code: 'BadRequest', message: 'nancyERPSource and nancyID are required' },
+      });
+    }
+    const item = putItem(source, nancyID, body);
+    res.status(201).json(item);
+  }
+);
+
+// --- Update item (PUT .../items('Source',nancyID))
+router.put(
+  /^\/v2\.0\/[^/]+\/[^/]+\/api\/standardInteriors\/nancyERP\/v1\.0\/companies\([^)]+\)\/items\(([^)]+)\)$/,
+  (req, res) => {
+    const [sourceRaw, nancyID] = (req.params[0] || '').split(',');
+    const source = (sourceRaw || '').replace(/'/g, '').trim();
+    const body = { ...req.body, nancyERPSource: source, nancyID: Number(nancyID) };
+    const item = putItem(source, nancyID, body);
+    res.status(200).json(item);
+  }
+);
+
+// --- itemsQuery with $filter
+router.get(
+  /^\/v2\.0\/[^/]+\/[^/]+\/api\/standardInteriors\/nancyERP\/v1\.0\/companies\([^)]+\)\/itemsQuery$/,
+  (req, res) => {
+    const filter = req.query.$filter || '';
+    const results = queryItems(filter);
+    res.json({
+      '@odata.context': '#itemsQuery',
+      value: results,
+    });
+  }
+);
+
+// --- Single-item get via alternate key syntax
+router.get(
+  /^\/v2\.0\/[^/]+\/[^/]+\/api\/standardInteriors\/nancyERP\/v1\.0\/items\(([^)]+)\)$/,
+  (req, res) => {
+    const expr = req.params[0] || '';
+    const sourceMatch = expr.match(/nancyERPSource='([^']+)'/);
+    const idMatch = expr.match(/nancyID=(\d+)/);
+    if (!sourceMatch || !idMatch) {
+      return res.status(400).json({ error: { code: 'BadRequest', message: 'Invalid key expression' } });
+    }
+    const item = getItem(sourceMatch[1], idMatch[1]);
+    if (!item) return res.status(404).json({ error: { code: 'NotFound', message: 'Item not found' } });
+    res.json(item);
+  }
+);
+
+// --- Picture container
+router.get(
+  /^\/v2\.0\/[^/]+\/[^/]+\/api\/v2\.0\/companies\([^)]+\)\/items\(([^)]+)\)\/picture$/,
+  (req, res) => {
+    const bcId = (req.params[0] || '').replace(/'/g, '');
+    const item = getItemByBcId(bcId);
+    if (!item) return res.status(404).json({ error: { code: 'NotFound', message: 'Item not found' } });
+    res.set('ETag', `"${item._etag}"`);
+    res.json({
+      '@odata.etag': `W/"${item._etag}"`,
+      id: item._bcId,
+      width: item._picture?.width || 0,
+      height: item._picture?.height || 0,
+      contentType: item._picture?.contentType || null,
+    });
+  }
+);
+
+// --- Upload picture binary
+const pictureUploadRegex =
+  /^\/v2\.0\/[^/]+\/[^/]+\/api\/v2\.0\/companies\([^)]+\)\/items\(([^)]+)\)\/picture\/content\/\$value$/;
+
+function handlePictureUpload(req, res) {
+  const contentType = req.headers['content-type'] || 'application/octet-stream';
+  const bcId = (req.params[0] || '').replace(/'/g, '');
+  const item = updateItemPicture(bcId, contentType, req.body);
+  if (!item) return res.status(404).json({ error: { code: 'NotFound', message: 'Item not found' } });
+  res.set('ETag', `"${item._etag}"`);
+  res.status(204).send();
+}
+router.patch(pictureUploadRegex, handlePictureUpload);
+router.put(pictureUploadRegex, handlePictureUpload);
+
+module.exports = router;
+'@ | Set-Content -Path .\d365bc-mock\src\routes\items.js -Encoding UTF8
+```
+
+**Step 2j: Create `d365bc-mock\src\routes\customers.js`**
+
+```powershell
+@'
+const express = require('express');
+const { putCustomer, getCustomer } = require('../store');
+const router = express.Router();
+
+// POST .../customers
+router.post(
+  /^\/v2\.0\/[^/]+\/[^/]+\/api\/standardInteriors\/nancyERP\/v1\.0\/companies\([^)]+\)\/customers$/,
+  (req, res) => {
+    const { nancyID } = req.body;
+    if (nancyID == null) {
+      return res.status(400).json({ error: { code: 'BadRequest', message: 'nancyID required' } });
+    }
+    const customer = putCustomer(nancyID, req.body);
+    res.status(201).json(customer);
+  }
+);
+
+// PUT .../customers(nancyID)
+router.put(
+  /^\/v2\.0\/[^/]+\/[^/]+\/api\/standardInteriors\/nancyERP\/v1\.0\/companies\([^)]+\)\/customers\(([^)]+)\)$/,
+  (req, res) => {
+    const nancyID = (req.params[0] || '').replace(/'/g, '');
+    const body = { ...req.body, nancyID: Number(nancyID) };
+    const customer = putCustomer(nancyID, body);
+    res.status(200).json(customer);
+  }
+);
+
+// GET .../customers(nancyID)
+router.get(
+  /^\/v2\.0\/[^/]+\/[^/]+\/api\/standardInteriors\/nancyERP\/v1\.0\/companies\([^)]+\)\/customers\(([^)]+)\)$/,
+  (req, res) => {
+    const nancyID = (req.params[0] || '').replace(/'/g, '');
+    const customer = getCustomer(nancyID);
+    if (!customer) return res.status(404).json({ error: { code: 'NotFound', message: 'Customer not found' } });
+    res.json(customer);
+  }
+);
+
+module.exports = router;
+'@ | Set-Content -Path .\d365bc-mock\src\routes\customers.js -Encoding UTF8
+```
+
+**Step 2k: Create `d365bc-mock\src\routes\sales.js`**
+
+```powershell
+@'
+const express = require('express');
+const { putSalesOrder, releaseSalesOrder, deleteSalesOrder, getSalesOrder } = require('../store');
+const router = express.Router();
+
+// POST .../sales
+router.post(
+  /^\/v2\.0\/[^/]+\/[^/]+\/api\/standardInteriors\/nancyERP\/v1\.0\/companies\([^)]+\)\/sales$/,
+  (req, res) => {
+    const body = req.body;
+    if (!body.jobNo) {
+      return res.status(400).json({ error: { code: 'BadRequest', message: 'jobNo required' } });
+    }
+    const order = putSalesOrder(body);
+    res.status(201).json(order);
+  }
+);
+
+// GET .../sales('Order','1001')
+router.get(
+  /^\/v2\.0\/[^/]+\/[^/]+\/api\/standardInteriors\/nancyERP\/v1\.0\/companies\([^)]+\)\/sales\(([^)]+)\)$/,
+  (req, res) => {
+    const expr = req.params[0] || '';
+    const [typeRaw, jobNoRaw] = expr.split(',');
+    const jobNo = (jobNoRaw || '').replace(/'/g, '').trim();
+    const order = getSalesOrder(jobNo);
+    if (!order) return res.status(404).json({ error: { code: 'NotFound', message: 'Sales order not found' } });
+    res.json(order);
+  }
+);
+
+// POST .../sales('Order','1001')/Microsoft.NAV.Release or /Microsoft.NAV.Delete
+router.post(
+  /^\/v2\.0\/[^/]+\/[^/]+\/api\/standardInteriors\/nancyERP\/v1\.0\/companies\([^)]+\)\/sales\(([^)]+)\)\/(.+)$/,
+  (req, res) => {
+    const expr = req.params[0] || '';
+    const action = req.params[1] || '';
+    const [typeRaw, jobNoRaw] = expr.split(',');
+    const jobNo = (jobNoRaw || '').replace(/'/g, '').trim();
+
+    if (action === 'Microsoft.NAV.Release') {
+      const order = releaseSalesOrder(jobNo);
+      if (!order) return res.status(404).json({ error: { code: 'NotFound', message: `Order ${jobNo} not found` } });
+      return res.json({ value: 'released successfully', jobNo });
+    }
+    if (action === 'Microsoft.NAV.Delete') {
+      const existed = deleteSalesOrder(jobNo);
+      if (!existed) return res.status(404).json({ error: { code: 'NotFound', message: `Order ${jobNo} not found` } });
+      return res.json({ value: 'deleted successfully', jobNo });
+    }
+    res.status(400).json({ error: { code: 'BadAction', message: `Unknown action ${action}` } });
+  }
+);
+
+module.exports = router;
+'@ | Set-Content -Path .\d365bc-mock\src\routes\sales.js -Encoding UTF8
+```
+
+**Step 2l: Create `d365bc-mock\src\routes\salespersons.js`**
+
+```powershell
+@'
+const express = require('express');
+const { putSalesperson, getSalesperson } = require('../store');
+const router = express.Router();
+
+router.post(
+  /^\/v2\.0\/[^/]+\/[^/]+\/api\/standardInteriors\/nancyERP\/v1\.0\/companies\([^)]+\)\/salespersons$/,
+  (req, res) => {
+    const { code, name } = req.body;
+    if (!code) return res.status(400).json({ error: { code: 'BadRequest', message: 'code required' } });
+    const sp = putSalesperson(code, { code, name });
+    res.status(201).json(sp);
+  }
+);
+
+router.get(
+  /^\/v2\.0\/[^/]+\/[^/]+\/api\/standardInteriors\/nancyERP\/v1\.0\/companies\([^)]+\)\/salespersons\(([^)]+)\)$/,
+  (req, res) => {
+    const code = (req.params[0] || '').replace(/'/g, '');
+    const sp = getSalesperson(code);
+    if (!sp) return res.status(404).json({ error: { code: 'NotFound', message: 'Salesperson not found' } });
+    res.json(sp);
+  }
+);
+
+module.exports = router;
+'@ | Set-Content -Path .\d365bc-mock\src\routes\salespersons.js -Encoding UTF8
+```
+
+**Step 2m: Create `d365bc-mock\src\routes\commissions.js`**
+
+```powershell
+@'
+const express = require('express');
+const { addCommission } = require('../store');
+const router = express.Router();
+
+router.post(
+  /^\/v2\.0\/[^/]+\/[^/]+\/api\/standardInteriors\/nancyERP\/v1\.0\/companies\([^)]+\)\/commissions$/,
+  (req, res) => {
+    const rec = addCommission(req.body);
+    res.status(201).json(rec);
+  }
+);
+
+module.exports = router;
+'@ | Set-Content -Path .\d365bc-mock\src\routes\commissions.js -Encoding UTF8
+```
+
+**Step 2n: Create `d365bc-mock\src\routes\pricelist.js`**
+
+```powershell
+@'
+const express = require('express');
+const router = express.Router();
+
+// POST .../itemPrices('BCItemNo')/Microsoft.NAV.addPricePurchase
+router.post(
+  /^\/v2\.0\/[^/]+\/[^/]+\/api\/abcGroup\/nancy\/v1\.0\/companies\([^)]+\)\/itemPrices\(([^)]+)\)\/(.+)$/,
+  (req, res) => {
+    const bcItemNo = (req.params[0] || '').replace(/'/g, '');
+    const action = req.params[1] || '';
+    if (action !== 'Microsoft.NAV.addPricePurchase') {
+      return res.status(400).json({ error: { code: 'BadAction', message: `Unknown action ${action}` } });
+    }
+    res.status(200).json({
+      value: `Purchase price added for ${bcItemNo}`,
+      bcItemNo,
+      payload: req.body,
+    });
+  }
+);
+
+module.exports = router;
+'@ | Set-Content -Path .\d365bc-mock\src\routes\pricelist.js -Encoding UTF8
+```
+
+**Step 2o: Create `d365bc-mock\src\routes\batch.js`**
+
+```powershell
+@'
+const express = require('express');
+const { releaseSalesOrder, deleteSalesOrder, putSalesOrder } = require('../store');
+const router = express.Router();
+
+// OData $batch endpoint
+const BATCH_REGEX = /^\/v2\.0\/[^/]+\/[^/]+\/api\/standardInteriors\/nancyERP\/v1\.0\/\$batch$/;
+
+function processRequest(subReq) {
+  const { method, url, body } = subReq;
+
+  // Sales order actions: sales('Order','1001')/Microsoft.NAV.Release
+  const salesMatch = url.match(/^sales\('([^']+)','([^']+)'\)\/(.+)$/i);
+  if (salesMatch) {
+    const [, type, jobNo, action] = salesMatch;
+    if (action === 'Microsoft.NAV.Release') {
+      const order = releaseSalesOrder(jobNo);
+      if (!order) return { status: 404, body: { error: { code: 'NotFound', message: `Order ${jobNo} not found` } } };
+      return { status: 200, body: { value: 'released successfully', jobNo } };
+    }
+    if (action === 'Microsoft.NAV.Delete') {
+      const existed = deleteSalesOrder(jobNo);
+      if (!existed) return { status: 404, body: { error: { code: 'NotFound', message: `Order ${jobNo} not found` } } };
+      return { status: 200, body: { value: 'deleted successfully', jobNo } };
+    }
+    return { status: 400, body: { error: { code: 'BadAction', message: `Unknown sales action: ${action}` } } };
+  }
+
+  // Plain sales POST (create)
+  if (method === 'POST' && url === 'sales') {
+    if (!body?.jobNo) return { status: 400, body: { error: { code: 'BadRequest', message: 'jobNo required' } } };
+    const order = putSalesOrder(body);
+    return { status: 201, body: order };
+  }
+
+  return {
+    status: 404,
+    body: { error: { code: 'NotFound', message: `Batch handler missing for: ${method} ${url}` } },
+  };
+}
+
+router.post(BATCH_REGEX, (req, res) => {
+  const requests = req.body?.requests;
+  if (!Array.isArray(requests)) {
+    return res.status(400).json({ error: { code: 'BadRequest', message: 'requests array required' } });
+  }
+
+  const responses = requests.map((sub, idx) => {
+    try {
+      const result = processRequest(sub);
+      return {
+        id: sub.id ?? idx,
+        status: result.status,
+        headers: { 'content-type': 'application/json' },
+        body: result.body,
+      };
+    } catch (err) {
+      return {
+        id: sub.id ?? idx,
+        status: 500,
+        body: { error: { code: 'InternalError', message: err.message } },
+      };
+    }
+  });
+
+  res.json({ responses });
+});
+
+module.exports = router;
+'@ | Set-Content -Path .\d365bc-mock\src\routes\batch.js -Encoding UTF8
+```
+
+**Step 2p: Create `d365bc-mock\src\routes\bcCallback.js`**
+
+```powershell
+@'
+// Simulates callbacks that BC would make back to Geoff (reverse direction).
+// Exposed as endpoints the mock offers, so developers can manually trigger
+// a BC -> Geoff item sync event to test the inbound path.
+const express = require('express');
+const router = express.Router();
+
+// Manual trigger: POST to our mock which forwards to Geoff API's /api/bcsync/callback
+router.post('/_mock/trigger-item-sync', async (req, res) => {
+  const geoffApiUrl = process.env.GEOFF_API_URL || 'http://api:5000';
+  const { operation = 'Update', item } = req.body;
+
+  try {
+    const bcauthResp = await fetch(`${geoffApiUrl}/api/bcauth/token`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Origin': process.env.BC365_API_ORIGIN || 'https://localhost',
+        'x-api-key': process.env.BC365_API_KEY || 'local',
+      },
+      body: JSON.stringify({ clientId: process.env.BC365_CLIENT_ID || 'local' }),
+    });
+    const tokenData = await bcauthResp.json();
+    const token = tokenData.token;
+
+    if (!token) {
+      return res.status(500).json({ error: 'Failed to get token from Geoff API', response: tokenData });
+    }
+
+    const syncResp = await fetch(`${geoffApiUrl}/api/bcsync/callback`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: JSON.stringify({ operation, item }),
+    });
+    const syncData = await syncResp.json().catch(() => ({ raw: 'non-json response' }));
+    res.json({ triggered: true, status: syncResp.status, response: syncData });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+module.exports = router;
+'@ | Set-Content -Path .\d365bc-mock\src\routes\bcCallback.js -Encoding UTF8
+```
+
+**Step 2q: Add the `d365bc-mock` service to `docker-compose.yml`**
+
+Add this service block to your `docker-compose.yml`, after the `auth-proxy` service and before the `api` service:
+
+```yaml
+  d365bc-mock:
+    build:
+      context: ./d365bc-mock
+    container_name: geoff-d365bc-mock
+    ports:
+      - "3200:3200"
+    environment:
+      PORT: "3200"
+      GEOFF_API_URL: "http://api:5000"
+      BC365_API_ORIGIN: "http://d365bc-mock:3200"
+      BC365_API_KEY: "local"
+      BC365_CLIENT_ID: "local"
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3200/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+```
+
+**Step 2r: Verify `appsettings.Local.json` has D365BC pointing to the mock**
+
+Your `appsettings.Local.json` must have these two values inside the `D365BC` block:
+
+```json
+"loginEndPoint": "http://d365bc-mock:3200",
+"baseUrl": "http://d365bc-mock:3200"
+```
+
+Check with:
+
+```powershell
+Select-String -Path .\appsettings.Local.json -Pattern 'd365bc-mock'
+```
+
+You should see both `loginEndPoint` and `baseUrl` pointing to `http://d365bc-mock:3200`. If they point elsewhere (e.g., a real Azure URL), update them manually in the JSON file.
+
+**Step 2s: Build and verify d365bc-mock**
+
+```powershell
+docker compose build d365bc-mock
+docker compose up -d d365bc-mock
+Start-Sleep -Seconds 10
+docker compose ps d365bc-mock
+# Test health
+Invoke-RestMethod -Uri "http://localhost:3200/health"
+```
+
+Expected: `{"status":"ok","service":"d365bc-mock","stats":{...}}`
+
+---
+
+#### Component 3: minio-init (S3 Bucket Auto-Creation)
+
+This is a one-shot container that runs after MinIO starts, creates the default S3 bucket, and sets it to allow anonymous downloads. Without it, you have to manually create the bucket through the MinIO console every time volumes are wiped.
+
+**Step 3a: Determine your bucket name**
+
+Check what bucket name your `appsettings.Local.json` uses:
+
+```powershell
+Select-String -Path .\appsettings.Local.json -Pattern 'BucketName'
+```
+
+The Mac setup uses `geoff-pdfs`. If your Windows config shows `geoff-files`, use that instead. The commands below use the `.env` variable `AWS_BUCKET_NAME_S3` which defaults to `geoff-pdfs`. If your Windows `.env` already has the right value, no change is needed. If your Windows bucket name is different, update it:
+
+```powershell
+# Only run this if your bucket name is different from geoff-pdfs:
+(Get-Content .\.env) -replace '^AWS_BUCKET_NAME_S3=.*$', 'AWS_BUCKET_NAME_S3=geoff-files' | Set-Content .\.env -Encoding UTF8
+```
+
+Also make sure the BucketUrl in `appsettings.Local.json` matches. If the bucket name in .env is `geoff-files`, then `BucketUrl` should be `http://minio:9000/geoff-files/` and `BucketName` should be `geoff-files`.
+
+**Step 3b: Add the `minio-init` service to `docker-compose.yml`**
+
+Add this directly after the `minio` service block:
+
+```yaml
+  # Create default bucket on startup
+  minio-init:
+    image: minio/mc
+    container_name: geoff-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:-minioadmin};
+      mc mb --ignore-existing local/${AWS_BUCKET_NAME_S3:-geoff-pdfs};
+      mc anonymous set download local/${AWS_BUCKET_NAME_S3:-geoff-pdfs};
+      echo 'MinIO bucket ready';
+      "
+```
+
+Note: The `${MINIO_ROOT_USER:-minioadmin}` and `${AWS_BUCKET_NAME_S3:-geoff-pdfs}` syntax pulls from your `.env` file. Docker Compose expands these automatically.
+
+**Step 3c: Verify minio-init**
+
+```powershell
+docker compose up -d minio
+# Wait for minio to be healthy
+Start-Sleep -Seconds 10
+docker compose up minio-init
+```
+
+Expected output ending with: `MinIO bucket ready`
+
+Verify the bucket exists:
+
+```powershell
+docker exec geoff-minio-init mc ls local/
+```
+
+You should see your bucket name listed (e.g., `geoff-pdfs/` or `geoff-files/`).
+
+---
+
+#### Final: Bring Everything Up Together
+
+After all three components are in place:
+
+```powershell
+docker compose down
+docker compose build
+docker compose up -d
+```
+
+Wait about 30 seconds for SQL Server to become healthy and auth-proxy to seed, then verify all three new services:
+
+```powershell
+# Check all containers are healthy/running
+docker compose ps
+
+# Auth proxy: health + DB connection
+Invoke-RestMethod -Uri "http://localhost:3100/health"
+
+# D365BC mock: health
+Invoke-RestMethod -Uri "http://localhost:3200/health"
+
+# MinIO bucket: check it was created (minio-init will have exited 0)
+docker compose logs minio-init
+```
+
+All three should report healthy. The auth-proxy logs (`docker compose logs auth-proxy`) should show `[SEED] Seeded N users` confirming it found and hashed all users from `MS_User`.
