@@ -6,12 +6,27 @@
 
 ## What this gets you
 
-A fully local NANCY ERP environment running in Docker. No AWS, no cloud.
+A **highest fidelity** local NANCY ERP environment. No AWS, no cloud. Everything runs in Docker on your machine.
 
 - Admin dashboard at `https://dev.s10drd.com`
-- .NET API, SQL Server, auth, file storage, D365 BC mock — all local
-- Real production data (customers, orders, pricing contracts, users)
-- Login: `admin@local.dev` / `password123` (Windows) or `ashley@standardinteriors.com` / `LocalDev123!` (Mac)
+- Log in as **any real employee** (Ashley, Maureen, etc.) — not fake test users
+- .NET API, SQL Server, auth, file storage — all local
+- **D365 Business Central mock** — vendor/item sync works locally instead of erroring out
+- **Real production data** (customers, orders, pricing contracts, users)
+- **Auto-provisioned S3 storage** (MinIO with auto-bucket creation)
+- Login: any real employee email / `LocalDev123!`
+
+### Design principle
+
+> **Highest fidelity possible.** The local environment should behave identically to production. Real users, real data, real auth flow, real BC integration (mocked). If something works locally, it should work in prod. No fake users, no skipped services, no silent failures.
+
+### Three critical components (REQUIRED — do not skip)
+
+| Component | What it does | Without it |
+|---|---|---|
+| **Real user DB auth** (auth-proxy with MS_User lookup) | Log in as any real employee, see their actual store/role/data | Stuck with 3 fake users that don't exist in the real DB — can't test as real employees |
+| **D365 BC mock** | Fakes Microsoft Dynamics 365 Business Central for vendor/item sync | Any BC integration in NANCY just errors out (500s) |
+| **minio-init** | Auto-creates the S3 file upload bucket on startup | File uploads silently fail until someone manually creates the bucket |
 
 ---
 
@@ -786,8 +801,8 @@ Open Chrome: `https://dev.s10drd.com`
 
 | Field | Value |
 |---|---|
-| Email | `ashley@standardinteriors.com` |
-| Password | `LocalDev123!` |
+| Email | Any real employee (e.g. `ashley@standardinteriors.com`, `maureen@standardinteriors.com`) |
+| Password | `LocalDev123!` (same for all users locally) |
 
 **Expected after login:**
 - Dashboard with tiles: Contacts (500), Proposals (500), Orders (500), Invoices A/R (500), Reports (500)
@@ -1029,14 +1044,13 @@ Use **Azure Data Studio** (free, Mac + Windows) or **SSMS** (Windows only).
 
 | What | Value |
 |---|---|
-| App login (Windows setup) | `admin@local.dev` / `password123` |
-| App login (Mac setup) | `ashley@standardinteriors.com` / `LocalDev123!` |
+| **App login** | Any real employee email (e.g. `ashley@standardinteriors.com`) / `LocalDev123!` |
 | SQL Server | `sa` / `LocalDev123!` |
 | MinIO | `minioadmin` / `minioadmin` |
-| JWT signing key (Windows) | `LocalDevJwtSecretKey2024!SuperSecure256Bit` |
-| JWT signing key (Mac) | `GeoffLocalDevKey_MustBe32CharsOrMore!` |
+| JWT signing key | `GeoffLocalDevKey_MustBe32CharsOrMore!` |
+| AES key / IV | `1234567890123456` / `1234567890123456` |
 
-None of these are used in production.
+All users in the database get the same local password (`LocalDev123!`). None of these values are used in production.
 
 ---
 
