@@ -650,85 +650,114 @@ python3 -c "import json; json.load(open('$HOME/NANCY/local-dev/appsettings.Local
 
 ## Step 7 — Seed the database
 
+There are **two SQL dump files**. Use `restore-clean.sql` — it's the one that works cleanly.
+
+| File | Database name | Contents | Use this? |
+|---|---|---|---|
+| `restore-clean.sql` (~443 MB) | `GeoffERP` | Full data: 89 tables, 187 users, 321 customers, 21K+ orders | **YES** |
+| `GEOFFERPDB_LIVE_backup.sql` (~423 MB) | `GEOFFERPDB_LIVE` | Live backup with AWS RDS paths that need sed rewriting | Only if you need the live DB name |
+
+Both files should already be in `~/NANCY/` (placed there before setup started).
+
 ### 7a. Start SQL Server
 
 ```bash
-cd ~/NANCY/local-dev
-docker compose up -d sqlserver
+cd ~/NANCY/local-dev/docker
+docker compose -p local-dev up -d sqlserver
 ```
+
+> **IMPORTANT:** Always use `-p local-dev` with docker compose. This sets the project name so volumes are named `local-dev_sqldata` etc. Without it, the project name defaults to the directory name (`docker`) and volumes don't match.
 
 ### 7b. Wait for healthy
 
 ```bash
-# Poll until healthy (up to 2 minutes)
 echo "Waiting for SQL Server..."
 for i in $(seq 1 24); do
   STATUS=$(docker inspect --format='{{.State.Health.Status}}' geoff-sqlserver 2>/dev/null)
-  echo "  Status: $STATUS"
+  echo "  Attempt $i: $STATUS"
   [ "$STATUS" = "healthy" ] && echo "SQL Server is ready!" && break
   sleep 5
 done
 ```
 
-### 7c. Load the seed data
+### 7c. Create the database and load data
 
-The seed file is `restore-clean.sql` (443 MB). This takes 5-20 minutes depending on hardware.
+The `restore-clean.sql` file expects the `GeoffERP` database to already exist (it starts with `USE [GeoffERP]`). Create it first, then seed.
 
-**Recommended approach (works on both platforms — uses a sidecar container):**
+**[MAC + WIN] Using Docker sidecar (recommended — no host sqlcmd needed):**
 
 ```bash
-cd ~/NANCY/local-dev
+cd ~/NANCY
 
 # Get the Docker network name
 NETWORK=$(docker network ls --filter "name=local-dev" --format "{{.Name}}" | head -1)
 
-# Run sqlcmd in a sidecar container connected to the same network
+# Step 1: Create the empty GeoffERP database
+docker run --rm --network "$NETWORK" \
+  mcr.microsoft.com/mssql-tools \
+  /opt/mssql-tools/bin/sqlcmd \
+  -S geoff-sqlserver -U sa -P 'LocalDev123!' \
+  -Q "CREATE DATABASE GeoffERP"
+
+# Step 2: Load the seed data (5-15 minutes for 443 MB)
 docker run --rm -i \
   --network "$NETWORK" \
   -v "$(pwd)/restore-clean.sql:/tmp/restore-clean.sql:ro" \
   mcr.microsoft.com/mssql-tools \
   /opt/mssql-tools/bin/sqlcmd \
   -S geoff-sqlserver -U sa -P 'LocalDev123!' \
+  -d GeoffERP \
   -i /tmp/restore-clean.sql
 ```
 
-**Alternative — host sqlcmd (if installed in Step 0):**
-
-```bash
-cd ~/NANCY/local-dev
-sqlcmd -S localhost,1433 -U sa -P 'LocalDev123!' -i restore-clean.sql
-```
-
-**[WIN] PowerShell alternative:**
+**[WIN] PowerShell alternative (if sqlcmd is installed on host):**
 
 ```powershell
-cd ~/NANCY/local-dev
-sqlcmd -S "localhost,1433" -U sa -P "LocalDev123!" -i restore-clean.sql
+cd ~/NANCY
+
+# Create DB
+sqlcmd -S "localhost,1433" -U sa -P "LocalDev123!" -Q "CREATE DATABASE GeoffERP"
+
+# Load seed (5-15 minutes)
+sqlcmd -S "localhost,1433" -U sa -P "LocalDev123!" -d GeoffERP -i restore-clean.sql
 ```
+
+> **Note:** You'll see `SqlState 24000, Invalid cursor state` warnings near the end. These are from stored procedures and are **non-fatal** — the data loaded fine.
 
 ### 7d. Verify
 
 ```bash
-docker run --rm \
-  --network "$NETWORK" \
+NETWORK=$(docker network ls --filter "name=local-dev" --format "{{.Name}}" | head -1)
+
+docker run --rm --network "$NETWORK" \
   mcr.microsoft.com/mssql-tools \
   /opt/mssql-tools/bin/sqlcmd \
-  -S geoff-sqlserver -U sa -P 'LocalDev123!' \
-  -Q "SELECT COUNT(*) AS TableCount FROM GeoffERP.INFORMATION_SCHEMA.TABLES" \
-  -h -1 -W
+  -S geoff-sqlserver -U sa -P 'LocalDev123!' -d GeoffERP \
+  -Q "SELECT 'Tables' AS What, COUNT(*) AS Cnt FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE='BASE TABLE' UNION ALL SELECT 'Users', COUNT(*) FROM MS_User UNION ALL SELECT 'Customers', COUNT(*) FROM TR_CustomerSignup UNION ALL SELECT 'Orders', COUNT(*) FROM TR_OrderProduct" -W
 ```
 
-**Expected:** A number 100+ (the GeoffERP database has ~130 tables).
+**Expected:**
+
+| What | Cnt |
+|---|---|
+| Tables | ~89 |
+| Users | ~187 |
+| Customers | ~321 |
+| Orders | ~21,000+ |
+
+If Customers or Orders show 0, the seed didn't finish — re-run Step 7c.
 
 ---
 
 ## Step 8 — Build and start all containers
 
 ```bash
-cd ~/NANCY/local-dev
-docker compose build     # First time: 5-10 minutes. Subsequent: seconds.
-docker compose up -d     # Start all 9 services in background.
+cd ~/NANCY/local-dev/docker
+docker compose -p local-dev build      # First time: 5-10 minutes. Subsequent: seconds.
+docker compose -p local-dev up -d      # Start all 9 services in background.
 ```
+
+> **Always use `-p local-dev`** to ensure consistent volume naming. Without it, Docker uses the directory name as project prefix and volumes won't match between commands.
 
 ### Verify all containers
 
