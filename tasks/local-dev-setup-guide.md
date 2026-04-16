@@ -308,18 +308,18 @@ cd ~/NANCY
 
 The other 5 repos can stay on their default branch.
 
-### Place the database dump
+### Database dumps (already in NANCY directory)
 
-Put `GEOFFERPDB_LIVE_backup.sql` directly in the `NANCY/` folder (not in a subfolder):
+The user will have already placed the database dump file(s) in the `NANCY/` directory before starting. Do NOT delete or move them. Expect to find:
 
 ```
 NANCY/
-  GEOFFERPDB_LIVE_backup.sql    <-- here (423 MB)
-  GeoffERP-API/
-  Geoff-ERP/
-  local-dev/
-  ...
+  GEOFFERPDB_LIVE_backup.sql    <-- ~423 MB, placed by user before setup
+  restore-clean.sql             <-- ~443 MB, alternate seed (may or may not be present)
+  (repos will be cloned here by the steps below)
 ```
+
+> **If neither SQL file is present**, ask the team lead (Jay / Robert) for `GEOFFERPDB_LIVE_backup.sql` before proceeding. The setup cannot complete without a database dump.
 
 ### Expected directory structure
 
