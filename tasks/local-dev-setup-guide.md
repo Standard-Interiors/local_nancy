@@ -1,58 +1,223 @@
 # NANCY Local Dev Setup Guide (Mac + Windows)
 
+> **For AI agents:** This guide is designed to be executed step-by-step by Claude Code or similar AI coding agents. Every command is copy-paste ready. Every step has a verification command. Platform-specific commands are labeled `[MAC]` or `[WIN]`.
+
+---
+
 ## What this gets you
 
-A fully local NANCY ERP environment — no AWS, no cloud dependencies. Everything runs in Docker on your machine. You'll be able to:
+A fully local NANCY ERP environment running in Docker. No AWS, no cloud.
 
-- Log into the admin dashboard at `https://dev.s10drd.com`
-- Place orders, view customers, manage pricing contracts
-- All backed by a local SQL Server with real seeded data
-- Auth handled locally (no Cognito), D365 BC mocked locally
+- Admin dashboard at `https://dev.s10drd.com`
+- .NET API, SQL Server, auth, file storage, D365 BC mock — all local
+- Real seeded data (customers, orders, pricing contracts, users)
+- Login: `ashley@standardinteriors.com` / `LocalDev123!`
 
 ---
 
-## Prerequisites
+## System requirements
 
-Install these BEFORE starting. All are free.
-
-### Both platforms
-
-| Tool | Mac Install | Windows Install | Why needed |
-|---|---|---|---|
-| **Docker Desktop** | [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop/) | Same link | Runs all the containers |
-| **Git** | `brew install git` | [git-scm.com](https://git-scm.com/) | Clone repos |
-| **mkcert** | `brew install mkcert` | `choco install mkcert` or [GitHub releases](https://github.com/FiloSottile/mkcert/releases) | Generate trusted local TLS certificates |
-| **Node.js 18+** | `brew install node@18` | [nodejs.org](https://nodejs.org/) | Run the React frontend on your machine |
-
-### Windows only
-
-| Tool | Install | Why needed |
+| Resource | Minimum | Recommended |
 |---|---|---|
-| **Chocolatey** (optional) | [chocolatey.org/install](https://chocolatey.org/install) | Makes installing mkcert easier |
-| **PowerShell 5.1+** | Built into Windows | Scripts are `.ps1` |
+| **RAM** | 8 GB | 16 GB |
+| **Disk** | 10 GB free | 20 GB free |
+| **Docker memory** | 4 GB allocated | 6-8 GB allocated |
+| **OS** | macOS 12+ / Windows 10 21H2+ | macOS 13+ / Windows 11 |
+| **CPU** | Any (Intel or Apple Silicon) | Apple Silicon or modern Intel |
 
-### Mac only
+---
 
-| Tool | Install | Why needed |
-|---|---|---|
-| **Homebrew** | [brew.sh](https://brew.sh/) | Package manager for Mac |
-| **Rosetta 2** (Apple Silicon only) | `softwareupdate --install-rosetta` | Some containers are x86-only |
+## Dependencies — EXACT versions and install commands
 
-### Verify Docker is working
+### Docker Desktop (REQUIRED — install first)
 
+Docker Desktop includes Docker Engine + Docker Compose v2. One install, both tools.
+
+**[MAC]**
 ```bash
-docker --version         # Should show 20.10+ or newer
-docker compose version   # Should show v2.x (note: no hyphen)
+# Download and install from:
+# https://www.docker.com/products/docker-desktop/
+# Choose "Mac with Apple Chip" for M1/M2/M3/M4, or "Mac with Intel Chip"
+
+# After install, open Docker Desktop app and let it finish initializing.
+# Then verify:
+docker --version          # Expect: Docker version 24.0+ (tested with 29.3.1)
+docker compose version    # Expect: Docker Compose version v2.x+ (tested with v5.1.1)
 ```
 
-If `docker compose` doesn't work but `docker-compose` does, you need a newer Docker Desktop.
+**[WIN] (PowerShell as Administrator)**
+```powershell
+# Download and install from:
+# https://www.docker.com/products/docker-desktop/
+# IMPORTANT: During install, ensure "Use WSL 2 based engine" is checked
+
+# After install, open Docker Desktop and let it finish initializing.
+# Then verify in PowerShell:
+docker --version          # Expect: Docker version 24.0+
+docker compose version    # Expect: Docker Compose version v2.x+
+```
+
+**Docker Desktop settings (BOTH platforms):**
+After install, open Docker Desktop > Settings > Resources:
+- Memory: **6 GB minimum** (8 GB recommended)
+- CPU: at least 4 cores
+- Disk image: at least 20 GB
+
+**[WIN] CRITICAL:** Docker Desktop must be in **Linux containers** mode (default). If you see "Switch to Linux containers..." in the Docker tray menu, click it. If you see "Switch to Windows containers..." you're already correct.
 
 ---
 
-## Step 1 — Clone all the repos
+### Git
 
-Create a working directory and clone everything into it. All repos must be siblings in the same parent folder.
+**[MAC]**
+```bash
+# Usually pre-installed. Verify:
+git --version    # Expect: git version 2.x
 
+# If missing:
+xcode-select --install    # Installs Git + Xcode CLI tools
+```
+
+**[WIN]**
+```powershell
+# Download from https://git-scm.com/download/win
+# IMPORTANT: During install, select "Checkout as-is, commit Unix-style line endings"
+# This prevents CRLF issues that break Docker container scripts.
+
+git --version    # Expect: git version 2.x
+
+# After install, configure line endings:
+git config --global core.autocrlf input
+```
+
+---
+
+### Node.js 18+ and npm
+
+The React frontend runs on your host machine (not in Docker). It needs Node.js.
+
+**[MAC]**
+```bash
+# Option A: Homebrew (recommended)
+brew install node@18
+echo 'export PATH="/opt/homebrew/opt/node@18/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+
+# Option B: Direct download from https://nodejs.org/ (LTS version)
+
+# Verify:
+node --version    # Expect: v18.x or v20.x (tested with v20.20.2)
+npm --version     # Expect: 9.x or 10.x (tested with 10.8.2)
+```
+
+**[WIN]**
+```powershell
+# Download LTS from https://nodejs.org/ and run the installer
+# Check "Automatically install necessary tools" during setup
+
+# Verify in a NEW terminal:
+node --version    # Expect: v18.x or v20.x
+npm --version     # Expect: 9.x or 10.x
+```
+
+---
+
+### mkcert (local TLS certificates)
+
+Creates trusted HTTPS certificates so Chrome doesn't show security warnings.
+
+**[MAC]**
+```bash
+brew install mkcert
+brew install nss       # For Firefox support (optional)
+mkcert -install        # Adds mkcert CA to system trust store (needs sudo)
+mkcert --version       # Expect: v1.4.x (tested with v1.4.4)
+```
+
+**[WIN] (PowerShell as Administrator)**
+```powershell
+# Option A: Chocolatey
+choco install mkcert
+
+# Option B: Direct download from https://github.com/FiloSottile/mkcert/releases
+# Download mkcert-vX.X.X-windows-amd64.exe, rename to mkcert.exe, add to PATH
+
+mkcert -install        # Adds mkcert CA to Windows certificate store
+mkcert --version       # Expect: v1.4.x
+```
+
+---
+
+### Apple Silicon only (M1/M2/M3/M4 Macs)
+
+```bash
+# Rosetta 2 — required for x86 Docker images (.NET API, floorplan)
+softwareupdate --install-rosetta --agree-to-license
+
+# Verify:
+/usr/bin/arch -x86_64 /bin/echo "Rosetta works"    # Should print "Rosetta works"
+```
+
+---
+
+### sqlcmd (for database seeding)
+
+**[MAC]**
+```bash
+# go-sqlcmd (Microsoft's cross-platform version)
+brew install sqlcmd
+
+# Verify:
+sqlcmd --version    # Expect: any version
+```
+
+**[WIN]**
+```powershell
+# Download from: https://learn.microsoft.com/en-us/sql/tools/sqlcmd/sqlcmd-utility
+# Or install via winget:
+winget install Microsoft.SqlCmd
+
+# Verify:
+sqlcmd -?    # Should show help output
+```
+
+---
+
+### Pre-flight verification (run this to check everything at once)
+
+**[MAC]**
+```bash
+echo "=== Pre-flight check ===" && \
+docker --version && \
+docker compose version && \
+git --version && \
+node --version && \
+npm --version && \
+mkcert --version && \
+sqlcmd --version 2>/dev/null || sqlcmd -? 2>/dev/null | head -1 && \
+echo "=== All dependencies OK ==="
+```
+
+**[WIN]**
+```powershell
+Write-Host "=== Pre-flight check ==="
+docker --version
+docker compose version
+git --version
+node --version
+npm --version
+mkcert --version
+sqlcmd -? 2>$null | Select-Object -First 1
+Write-Host "=== All dependencies OK ==="
+```
+
+---
+
+## Step 1 — Clone all repos
+
+All repos must be siblings in the same parent directory.
+
+**[BOTH]**
 ```bash
 mkdir ~/NANCY && cd ~/NANCY
 
@@ -64,9 +229,9 @@ git clone https://github.com/Standard-Interiors/ordering-system.git
 git clone https://github.com/Standard-Interiors/local_nancy.git
 ```
 
-### Switch to the local dev branch
+**[WIN] Note:** If using PowerShell, `~` resolves to `C:\Users\<YourName>`. This works fine.
 
-Each repo has a `local_dev_env` branch with the patches needed for local development:
+### Switch to the local dev branch
 
 ```bash
 cd ~/NANCY/GeoffERP-API     && git checkout local_dev_env
@@ -76,76 +241,84 @@ cd ~/NANCY/seaming-frontend  && git checkout local_dev_env
 cd ~/NANCY/ordering-system   && git checkout local_dev_env
 ```
 
-### Get the local-dev infrastructure
+### Get the local-dev directory
 
-The `local-dev/` directory contains Docker configs, mock services, and seed data. It lives alongside the repos:
+The `local-dev/` directory is NOT in git (it contains a 443 MB database dump). Get it from the team lead via USB, OneDrive, or internal file share.
+
+Place it at `~/NANCY/local-dev/` so the directory structure looks like:
 
 ```
 ~/NANCY/
-  GeoffERP-API/          <-- .NET API
-  Geoff-ERP/             <-- React frontend
-  floorplan-backend/     <-- Python floorplan service
-  seaming-frontend/      <-- Seaming SVG editor
-  ordering-system/       <-- Customer ordering portal
-  local-dev/             <-- Docker Compose, mocks, configs (THIS IS THE KEY DIRECTORY)
-  local_nancy/           <-- This documentation repo
+  GeoffERP-API/
+  Geoff-ERP/
+  floorplan-backend/
+  seaming-frontend/
+  ordering-system/
+  local_nancy/
+  local-dev/              <-- from team lead
+    docker-compose.yml
+    Caddyfile
+    Dockerfile.api
+    Dockerfile.floorplan
+    .env
+    appsettings.Local.json
+    restore-clean.sql     (443 MB)
+    auth-proxy/
+    d365bc-mock/
+    certs/
 ```
 
-> **Important:** The `local-dev/` directory is NOT in a git repo. It must be shared separately (USB, zip, or internal file share). Ask the team lead for it. It contains a 443 MB database seed file that is too large for GitHub.
+### Verify directory structure
+
+```bash
+ls ~/NANCY/GeoffERP-API/GEOFF.API/Startup.cs && \
+ls ~/NANCY/Geoff-ERP/package.json && \
+ls ~/NANCY/floorplan-backend/requirements.txt && \
+ls ~/NANCY/local-dev/docker-compose.yml && \
+echo "Directory structure OK"
+```
 
 ---
 
 ## Step 2 — Apply the API patches
 
-Two files in `GeoffERP-API` need modifications to work locally. These are env-gated and will NOT affect production.
+Two files in GeoffERP-API need changes. The `local_dev_env` branch should already have them.
 
-### Patch 1: Startup.cs (JWT auth)
-
-**File:** `GeoffERP-API/GEOFF.API/Startup.cs`
-
-**What to change:** The JWT authentication section needs an `if (environment == "Local")` branch that uses a symmetric signing key instead of AWS Cognito.
-
-The `local_dev_env` branch should already have this change. Verify by checking for `"Local"` in Startup.cs:
+### Verify Patch 1: Startup.cs
 
 ```bash
-cd ~/NANCY/GeoffERP-API
-grep -n "Local" GEOFF.API/Startup.cs
+grep -c '"Local"' ~/NANCY/GeoffERP-API/GEOFF.API/Startup.cs
 ```
 
-You should see lines referencing `if (environment == "Local")`. If NOT present, the change hasn't been applied — ask the team lead.
+**Expected:** A number > 0 (means the Local JWT auth branch exists).
+**If 0:** The patch isn't applied. Ask the team lead or apply from the `local_dev_env` branch.
 
-**Why:** Without this, the API tries to call AWS Cognito on every request and fails.
+### Verify Patch 2: appsettings.json
 
-### Patch 2: appsettings.json (placeholder fix)
-
-**File:** `GeoffERP-API/GEOFF.API/appsettings.json`
-
-**What to change:** Find the line with `PLACEHOLDER_CUSTOMER_PARENT_ID` and change it to `0`:
-
-```json
-"CustomerParentId": 0
+```bash
+grep "CustomerParentId" ~/NANCY/GeoffERP-API/GEOFF.API/appsettings.json
 ```
 
-**Why:** The placeholder is invalid JSON. The API can't parse the config file at startup without this fix. The real value is overridden by `appsettings.Local.json` (which sets it to `42`), so `0` is just a safe default that makes the file parseable.
+**Expected:** `"CustomerParentId": 0` (a number, not `PLACEHOLDER_CUSTOMER_PARENT_ID`)
+**If you see `PLACEHOLDER_CUSTOMER_PARENT_ID`:** Change it to `0`:
+
+**[MAC]**
+```bash
+sed -i '' 's/PLACEHOLDER_CUSTOMER_PARENT_ID/0/' ~/NANCY/GeoffERP-API/GEOFF.API/appsettings.json
+```
+
+**[WIN]**
+```powershell
+(Get-Content ~/NANCY/GeoffERP-API/GEOFF.API/appsettings.json) -replace 'PLACEHOLDER_CUSTOMER_PARENT_ID', '0' | Set-Content ~/NANCY/GeoffERP-API/GEOFF.API/appsettings.json
+```
 
 ---
 
 ## Step 3 — Generate TLS certificates
 
-The local environment uses HTTPS with trusted self-signed certificates via mkcert. Each developer must generate their own.
-
-### Install mkcert's root CA (one-time)
-
 ```bash
-mkcert -install
-```
-
-This adds mkcert's root certificate to your system trust store. Chrome and other browsers will trust certificates signed by it.
-
-### Generate the certificate
-
-```bash
-cd ~/NANCY/local-dev/certs
+cd ~/NANCY/local-dev
+mkdir -p certs && cd certs
 
 mkcert \
   dev.s10drd.com \
@@ -153,98 +326,74 @@ mkcert \
   dev.seaming.s10drd.com \
   dev.mapy.s10drd.com \
   order.s10drd.com
-```
 
-Rename the output files:
-
-```bash
 mv dev.s10drd.com+4.pem cert.pem
 mv dev.s10drd.com+4-key.pem key.pem
 ```
 
-**Windows note:** If using PowerShell, the commands are the same. Make sure you're in the `certs/` directory.
+### Verify
 
-After this, `local-dev/certs/` should contain:
-- `cert.pem` — the certificate
-- `key.pem` — the private key
+```bash
+ls -la ~/NANCY/local-dev/certs/cert.pem ~/NANCY/local-dev/certs/key.pem
+```
+
+Both files must exist and be non-empty.
 
 ---
 
-## Step 4 — Configure /etc/hosts
+## Step 4 — Configure hosts file
 
-The local environment uses real-looking hostnames that must resolve to your machine.
-
-### Mac
+### [MAC]
 
 ```bash
-sudo nano /etc/hosts
-```
+# Append host entries (requires sudo password)
+sudo bash -c 'cat >> /etc/hosts << EOF
 
-Add these lines at the bottom:
-
-```
+# NANCY Local Dev
 127.0.0.1  dev.s10drd.com
 127.0.0.1  dev.api.s10drd.com
 127.0.0.1  dev.seaming.s10drd.com
 127.0.0.1  dev.mapy.s10drd.com
 127.0.0.1  order.s10drd.com
-```
+EOF'
 
-Save and exit (Ctrl+O, Enter, Ctrl+X).
-
-Flush DNS cache:
-
-```bash
+# Flush DNS cache
 sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder
 ```
 
-### Windows
+### [WIN] (PowerShell as Administrator)
 
-Open Notepad **as Administrator** and open:
+```powershell
+$hostsPath = "$env:SystemRoot\System32\drivers\etc\hosts"
+$entries = @"
 
-```
-C:\Windows\System32\drivers\etc\hosts
-```
-
-Add the same five lines at the bottom:
-
-```
+# NANCY Local Dev
 127.0.0.1  dev.s10drd.com
 127.0.0.1  dev.api.s10drd.com
 127.0.0.1  dev.seaming.s10drd.com
 127.0.0.1  dev.mapy.s10drd.com
 127.0.0.1  order.s10drd.com
-```
-
-Save the file. Flush DNS:
-
-```powershell
+"@
+Add-Content -Path $hostsPath -Value $entries
 ipconfig /flushdns
 ```
 
 ### Verify
 
 ```bash
-ping dev.s10drd.com
+ping -c 1 dev.s10drd.com 2>/dev/null || ping -n 1 dev.s10drd.com
 ```
 
 Should resolve to `127.0.0.1`.
 
 ---
 
-## Step 5 — Set up the .env file
+## Step 5 — Create the .env file
 
-The `.env` file contains shared secrets for all local services. A copy should already exist at `local-dev/.env`.
-
-**Verify it exists:**
+**Only needed if `~/NANCY/local-dev/.env` doesn't already exist.**
 
 ```bash
-cat ~/NANCY/local-dev/.env
-```
-
-If missing, create it with these contents:
-
-```env
+cat > ~/NANCY/local-dev/.env << 'EOF'
 DB_HOST=sqlserver
 DB_PORT=1433
 DB_NAME=GeoffERP
@@ -263,117 +412,245 @@ AWS_ACCESS_KEY_S3=minioadmin
 AWS_SECRET_KEY_S3=minioadmin
 AWS_BUCKET_NAME_S3=geoff-pdfs
 AWS_REGION_S3=us-east-1
+EOF
+```
+
+### Verify
+
+```bash
+grep DB_PASSWORD ~/NANCY/local-dev/.env    # Should show: DB_PASSWORD=LocalDev123!
 ```
 
 ---
 
-## Step 6 — Set up the appsettings.Local.json
+## Step 6 — Create appsettings.Local.json
 
-This file overrides the .NET API's config to point at local Docker services instead of AWS/Azure.
+**Only needed if `~/NANCY/local-dev/appsettings.Local.json` doesn't already exist.**
 
-**Verify it exists:**
+This is the .NET API's config that redirects all cloud services to local Docker containers.
 
-```bash
-ls ~/NANCY/local-dev/appsettings.Local.json
-```
-
-If missing, copy the example and fill in:
+<details>
+<summary>Click to expand full appsettings.Local.json (copy-paste ready)</summary>
 
 ```bash
-cp ~/NANCY/local-dev/appsettings.Local.example ~/NANCY/local-dev/appsettings.Local.json
+cat > ~/NANCY/local-dev/appsettings.Local.json << 'ENDJSON'
+{
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "Microsoft": "Warning"
+    }
+  },
+  "ConnectionStrings": {
+    "geoffConn": "Server=sqlserver,1433;Database=GeoffERP;User Id=sa;Password=LocalDev123!;TrustServerCertificate=True",
+    "ExcelConString": ""
+  },
+  "AWSCognito": {
+    "ClientId": "not-used-local",
+    "UserPoolId": "not-used-local",
+    "IdentityPoolId": "not-used-local",
+    "IdentityProvider": "cognito-idp.us-east-1.amazonaws.com",
+    "AccessKey": "not-used-local",
+    "SecretKey": "not-used-local",
+    "CustomAttribute": {
+      "RoleId": "custom:RoleId",
+      "MultipleRole": "custom:multipleroleid"
+    }
+  },
+  "AESKey": {
+    "AesKey": "1234567890123456",
+    "IV": "1234567890123456"
+  },
+  "JWTKey": {
+    "Key": "GeoffLocalDevKey_MustBe32CharsOrMore!",
+    "Issuer": "https://dev.api.s10drd.com",
+    "Audience": "geoff-local"
+  },
+  "Jwt": {
+    "Key": "GeoffLocalDevKey_MustBe32CharsOrMore!",
+    "Issuer": "https://dev.api.s10drd.com",
+    "Audience": "geoff-local"
+  },
+  "RoleAccessPath": "../GEOFF.API/RoleAccess",
+  "Vendor": { "DefaultVendor": "GeOff" },
+  "AWSS3Bucket": {
+    "AccessKey": "minioadmin",
+    "SecretKey": "minioadmin",
+    "BucketName": "geoff-pdfs",
+    "BucketUrl": "http://minio:9000/geoff-pdfs/"
+  },
+  "AllowedfileExt": { "Ext": ".jpeg,.jpg,.png,.xlsx,.xls,.pdf,.csv,.svg" },
+  "CrossDomain": {
+    "Measure": "https://dev.seaming.s10drd.com",
+    "Ordering": "https://order.s10drd.com"
+  },
+  "UploadFolder": {
+    "SVG": "../GEOFF.API/Upload/SVG",
+    "PNG": "../GEOFF.API/Upload/PNG"
+  },
+  "PusherDetail": {
+    "AppId": "local",
+    "PublicKey": "local",
+    "SecretKey": "local",
+    "Cluster": "local",
+    "Channel": "local-dev",
+    "Event": "update-order-status"
+  },
+  "Roles": { "CustomerParentId": 42 },
+  "Store": { "DefaultStore": 12 },
+  "EmailConfiguration": {
+    "From": "local@dev.local",
+    "SmtpServer": "localhost",
+    "Port": 587,
+    "Username": "local",
+    "Password": "local",
+    "Subject": "Local Dev",
+    "EmailText": "",
+    "VarificationUrl": "https://order.s10drd.com"
+  },
+  "Frontend_URL": { "Url": "https://dev.s10drd.com" },
+  "Mail": { "Content": "" },
+  "PricingContract": { "WallBase_ProductStructureID": 172 },
+  "LaborCategory": {
+    "StandardStair_LaborCategoryID": 1114,
+    "SpecializedStair_LaborCategoryID": 1115
+  },
+  "AvalaraTax": {
+    "UserId": "local",
+    "Password": "local",
+    "BaseUrl": "https://rest.avatax.com",
+    "EndPoint": "/api/v2/transactions/create"
+  },
+  "Odoo": {
+    "APIKey": "local",
+    "BaseUrl": "https://localhost",
+    "CountryState": "odooCountryState.json"
+  },
+  "APIStatus": { "UserId": 1 },
+  "D365BC": {
+    "bcTenant": "mock-tenant",
+    "bcClientId": "mock-client",
+    "loginEndPoint": "http://d365bc-mock:3200",
+    "bcClientSecret": "mock-secret",
+    "bcEnvironment": "local",
+    "bcCompany": "mock-company",
+    "baseUrl": "http://d365bc-mock:3200"
+  },
+  "OrderEmail": { "ToEmailAddress": "local@dev.local" },
+  "AwsCloudWatchLog": {
+    "AccessKey": "local",
+    "SecretKey": "local",
+    "LogGroupName": "local-dev"
+  },
+  "HubSpot": {
+    "ApiKey": "local",
+    "ClientSecret": "local",
+    "MultifamilyPipelineId": "1260367605",
+    "DugoutStageId": "2024343266"
+  },
+  "BC365Integration": {
+    "bcClientId": "local",
+    "RequireJWT": true,
+    "JWTSecret": "GeoffLocalDevKey_MustBe32CharsOrMore!",
+    "JWTIssuer": "NancyERP",
+    "JWTAudience": "BC365Client",
+    "JWTExpiryMinutes": "60",
+    "LogPath": "./Logs/BC",
+    "apiOrigin": "http://d365bc-mock:3200",
+    "bcApiKey": "local"
+  },
+  "RingCentral": {
+    "ClientId": "local",
+    "ClientSecret": "local",
+    "JwtToken": "local",
+    "PollingIntervalMinutes": 9999,
+    "ServerUrl": "https://localhost"
+  }
+}
+ENDJSON
 ```
 
-Then edit `appsettings.Local.json`. The key sections to set:
+</details>
 
-- `ConnectionStrings.geoffConn` = `Server=sqlserver,1433;Database=GeoffERP;User Id=sa;Password=LocalDev123!`
-- `JWTKey.Key` = `GeoffLocalDevKey_MustBe32CharsOrMore!`
-- `Jwt.Issuer` = `https://dev.api.s10drd.com`
-- `Jwt.Audience` = `geoff-local`
-- `AESKey.Key` = `1234567890123456`
-- `AESKey.IV` = `1234567890123456`
-- `AWSS3Bucket.BucketUrl` = `http://minio:9000/geoff-pdfs/`
-- `AWSS3Bucket.AccessKey` = `minioadmin`
-- `AWSS3Bucket.SecretKey` = `minioadmin`
-- `D365BC.baseUrl` = `http://d365bc-mock:3200`
-- `D365BC.loginEndPoint` = `http://d365bc-mock:3200`
-- `Frontend_URL` = `https://dev.s10drd.com`
+### Verify
 
-> Ask the team lead for a pre-filled copy if the example file has too many `FILL_IN` placeholders.
+```bash
+python3 -c "import json; json.load(open('$HOME/NANCY/local-dev/appsettings.Local.json')); print('Valid JSON')"
+```
 
 ---
 
 ## Step 7 — Seed the database
 
-The local SQL Server needs to be populated with data.
-
-### Start just SQL Server first
+### 7a. Start SQL Server
 
 ```bash
 cd ~/NANCY/local-dev
 docker compose up -d sqlserver
 ```
 
-Wait for it to become healthy:
+### 7b. Wait for healthy
 
 ```bash
-docker compose ps
+# Poll until healthy (up to 2 minutes)
+echo "Waiting for SQL Server..."
+for i in $(seq 1 24); do
+  STATUS=$(docker inspect --format='{{.State.Health.Status}}' geoff-sqlserver 2>/dev/null)
+  echo "  Status: $STATUS"
+  [ "$STATUS" = "healthy" ] && echo "SQL Server is ready!" && break
+  sleep 5
+done
 ```
 
-Look for `geoff-sqlserver ... Up ... (healthy)`. This can take 30-60 seconds.
+### 7c. Load the seed data
 
-### Load the seed data
+The seed file is `restore-clean.sql` (443 MB). This takes 5-20 minutes depending on hardware.
 
-The seed file is `restore-clean.sql` (443 MB SQL script).
-
-**Mac:**
+**Recommended approach (works on both platforms — uses a sidecar container):**
 
 ```bash
-# Install sqlcmd if you don't have it
-brew install sqlcmd
+cd ~/NANCY/local-dev
 
-# Run the seed script (this takes 5-15 minutes)
-sqlcmd -S localhost,1433 -U sa -P 'LocalDev123!' -i restore-clean.sql
-```
+# Get the Docker network name
+NETWORK=$(docker network ls --filter "name=local-dev" --format "{{.Name}}" | head -1)
 
-**Windows (PowerShell):**
-
-```powershell
-# Install sqlcmd if you don't have it — download from:
-# https://learn.microsoft.com/en-us/sql/tools/sqlcmd/sqlcmd-utility
-
-# Run the seed script
-sqlcmd -S localhost,1433 -U sa -P "LocalDev123!" -i restore-clean.sql
-```
-
-**Alternative — use a Docker sidecar (works on both platforms):**
-
-```bash
-# Copy the SQL file into the container
-docker cp restore-clean.sql geoff-sqlserver:/tmp/restore-clean.sql
-
-# Execute it inside the container (may take 10-20 minutes)
-docker exec -it geoff-sqlserver /opt/mssql-tools/bin/sqlcmd \
-  -S localhost -U sa -P 'LocalDev123!' \
+# Run sqlcmd in a sidecar container connected to the same network
+docker run --rm -i \
+  --network "$NETWORK" \
+  -v "$(pwd)/restore-clean.sql:/tmp/restore-clean.sql:ro" \
+  mcr.microsoft.com/mssql-tools \
+  /opt/mssql-tools/bin/sqlcmd \
+  -S geoff-sqlserver -U sa -P 'LocalDev123!' \
   -i /tmp/restore-clean.sql
 ```
 
-> **Note:** If `/opt/mssql-tools/bin/sqlcmd` doesn't exist inside the container (Azure SQL Edge on ARM may not have it), use the host-based `sqlcmd` approach above, or run a temporary sidecar:
-> ```bash
-> docker run --rm --network local-dev_default \
->   mcr.microsoft.com/mssql-tools \
->   /opt/mssql-tools/bin/sqlcmd \
->   -S geoff-sqlserver -U sa -P 'LocalDev123!' \
->   -i /tmp/restore-clean.sql
-> ```
-
-### Verify the database loaded
+**Alternative — host sqlcmd (if installed in Step 0):**
 
 ```bash
-sqlcmd -S localhost,1433 -U sa -P 'LocalDev123!' \
-  -Q "SELECT COUNT(*) AS TableCount FROM GeoffERP.INFORMATION_SCHEMA.TABLES"
+cd ~/NANCY/local-dev
+sqlcmd -S localhost,1433 -U sa -P 'LocalDev123!' -i restore-clean.sql
 ```
 
-Should return 100+ tables. If you see 0, the seed didn't work — check for errors above.
+**[WIN] PowerShell alternative:**
+
+```powershell
+cd ~/NANCY/local-dev
+sqlcmd -S "localhost,1433" -U sa -P "LocalDev123!" -i restore-clean.sql
+```
+
+### 7d. Verify
+
+```bash
+docker run --rm \
+  --network "$NETWORK" \
+  mcr.microsoft.com/mssql-tools \
+  /opt/mssql-tools/bin/sqlcmd \
+  -S geoff-sqlserver -U sa -P 'LocalDev123!' \
+  -Q "SELECT COUNT(*) AS TableCount FROM GeoffERP.INFORMATION_SCHEMA.TABLES" \
+  -h -1 -W
+```
+
+**Expected:** A number 100+ (the GeoffERP database has ~130 tables).
 
 ---
 
@@ -381,21 +658,19 @@ Should return 100+ tables. If you see 0, the seed didn't work — check for erro
 
 ```bash
 cd ~/NANCY/local-dev
-docker compose build
-docker compose up -d
+docker compose build     # First time: 5-10 minutes. Subsequent: seconds.
+docker compose up -d     # Start all 9 services in background.
 ```
 
-First build takes 5-10 minutes (downloading base images, compiling .NET, installing npm packages). Subsequent starts take seconds.
-
-### Verify all containers are up
+### Verify all containers
 
 ```bash
 docker compose ps
 ```
 
-You should see **9 containers** (minio-init is a one-shot that exits after creating the bucket):
+**Expected — 9 running containers:**
 
-| Container | Expected Status |
+| Container | Status |
 |---|---|
 | `geoff-sqlserver` | Up (healthy) |
 | `geoff-auth-proxy` | Up (healthy) |
@@ -407,256 +682,290 @@ You should see **9 containers** (minio-init is a one-shot that exits after creat
 | `geoff-seaming` | Up |
 | `geoff-ordering` | Up |
 
-If any container is not `Up`, check its logs:
+(`geoff-minio-init` will show Exited(0) — that's correct, it's a one-shot init container.)
+
+### Quick health checks
 
 ```bash
-docker compose logs <service-name>
-# Example: docker compose logs api
+# Auth proxy
+curl -sk https://dev.api.s10drd.com/health && echo ""
+
+# D365 BC mock
+curl -s http://localhost:3200/health && echo ""
+
+# API (direct)
+curl -s http://localhost:5001/api/values 2>/dev/null; echo "(any response = API is up)"
+
+# MinIO
+curl -s http://localhost:9000/minio/health/live && echo ""
 ```
 
 ---
 
 ## Step 9 — Start the React frontend
 
-The React frontend is NOT containerized. It runs on your host machine.
-
 ```bash
 cd ~/NANCY/Geoff-ERP
-npm install --legacy-peer-deps
-npm start
+npm install --legacy-peer-deps    # First time: 1-3 minutes
+npm start                         # Starts dev server at localhost:3000
 ```
 
-This starts the dev server at `http://localhost:3000`. You don't need to open this URL directly — Caddy proxies `https://dev.s10drd.com` to it.
+**Important:** Leave this terminal running. The React dev server must stay up for the dashboard to work.
 
-> **Windows note:** If `npm start` fails with EACCES or permission errors, try running your terminal as Administrator.
+**[MAC] Apple Silicon note:** If `npm install` fails with node-gyp errors:
+```bash
+xcode-select --install    # Install Xcode CLI tools if missing
+```
 
-> **Mac Apple Silicon note:** If you get node-gyp build errors during `npm install`, make sure you have Xcode Command Line Tools: `xcode-select --install`
+**[WIN] note:** If `npm start` fails with EACCES errors, run your terminal as Administrator.
+
+### Verify
+
+```bash
+curl -sk https://dev.s10drd.com | head -1    # Should return HTML
+```
 
 ---
 
-## Step 10 — Log in and verify
+## Step 10 — Log in
 
-Open Chrome and go to:
+Open Chrome: `https://dev.s10drd.com`
 
-```
-https://dev.s10drd.com
-```
-
-### Login credentials
-
-All users share the same local password:
-
-- **Email:** `ashley@standardinteriors.com` (or any user in the system)
-- **Password:** `LocalDev123!`
-
-### What you should see
-
-1. **Login page** — "Nancy ERP" branding with email/password fields
-2. **Dashboard** — tiles showing Contacts, Proposals, Orders, Invoices A/R, Reports (all showing 500)
-3. **Sidebar** (click hamburger menu) — Dashboard, Place An Order, Existing Orders, Deleted Orders, Sales Customer Info, Pricing Contracts
-
-If you see the dashboard with data, everything is working.
-
----
-
-## Architecture overview
-
-Here's how all the pieces fit together:
-
-```
-Browser
-  |
-  |  https://dev.s10drd.com    (React frontend)
-  |  https://dev.api.s10drd.com (API + auth)
-  |  https://dev.seaming.s10drd.com
-  |  https://dev.mapy.s10drd.com
-  |  https://order.s10drd.com
-  |
-  v
-/etc/hosts -> 127.0.0.1
-  |
-  v
-[Caddy Reverse Proxy] :443 (TLS via mkcert)
-  |
-  +--> host.docker.internal:3000  (React dev server on your machine)
-  |
-  +--> auth-proxy:3100            (local auth, replaces AWS Cognito)
-  |    +--> sqlserver:1433        (user lookup)
-  |
-  +--> api:5000                   (.NET API)
-  |    +--> sqlserver:1433        (GeoffERP database)
-  |    +--> minio:9000            (file storage, replaces S3)
-  |    +--> d365bc-mock:3200      (replaces Microsoft Dynamics 365 BC)
-  |
-  +--> seaming-web:8082           (static file server)
-  +--> ordering-web:8083          (static file server)
-  +--> floorplan:80               (Python Flask app)
-```
-
-### What replaces what
-
-| Production (AWS/Cloud) | Local Replacement |
+| Field | Value |
 |---|---|
-| AWS Cognito | auth-proxy (Node.js, HS256 JWTs) |
-| Microsoft Dynamics 365 BC | d365bc-mock (Node.js, in-memory) |
-| AWS S3 | MinIO (S3-compatible, runs in Docker) |
-| Azure SQL / RDS | SQL Server container (Azure SQL Edge) |
-| CloudFront / ALB | Caddy reverse proxy |
-| Route53 DNS | /etc/hosts entries |
-| ACM Certificates | mkcert self-signed certificates |
+| Email | `ashley@standardinteriors.com` |
+| Password | `LocalDev123!` |
+
+**Expected after login:**
+- Dashboard with tiles: Contacts (500), Proposals (500), Orders (500), Invoices A/R (500), Reports (500)
+- Sidebar (hamburger menu): Dashboard, Place An Order, Existing Orders, Deleted Orders, Sales Customer Info, Pricing Contracts
 
 ---
 
-## Port reference
+## Docker images reference
 
-| Port | Service | How to access |
+Every Docker image used by the stack:
+
+| Service | Image | Platform | Purpose |
+|---|---|---|---|
+| sqlserver | `mcr.microsoft.com/azure-sql-edge:latest` | Multi-arch (ARM64 native) | SQL Server (ARM-compatible variant) |
+| auth-proxy | Custom build (`./auth-proxy/Dockerfile`) | `node:18-slim` base | Replaces AWS Cognito |
+| d365bc-mock | Custom build (`./d365bc-mock/Dockerfile`) | `node:18-slim` base | Replaces Microsoft D365 BC |
+| api | Custom build (`Dockerfile.api`) | `linux/amd64` forced | .NET Core 3.1 API (built with SDK 6.0) |
+| floorplan | Custom build (`Dockerfile.floorplan`) | `linux/amd64` forced | Python 3.10 + wkhtmltopdf |
+| minio | `minio/minio` | Multi-arch | S3-compatible storage (replaces AWS S3) |
+| minio-init | `minio/mc` | Multi-arch | One-shot: creates default bucket |
+| seaming-web | `python:3.10-slim` | Multi-arch | Static file server for seaming editor |
+| ordering-web | `python:3.10-slim` | Multi-arch | Static file server for ordering portal |
+| caddy | `caddy:2` | Multi-arch | Reverse proxy + TLS termination |
+
+**Apple Silicon note:** The `api` and `floorplan` services are forced to `linux/amd64` and run under Rosetta 2 emulation. This is intentional — the .NET Core 3.1 runtime and wkhtmltopdf have no ARM64 images.
+
+---
+
+## Architecture
+
+```
+Browser (Chrome)
+  |
+  | /etc/hosts -> 127.0.0.1
+  v
+[Caddy :443] ---- TLS (mkcert certs) ----
+  |
+  |-- dev.s10drd.com ----------> host.docker.internal:3000 (React on host)
+  |
+  |-- dev.api.s10drd.com -----> auth-proxy:3100 (login routes only)
+  |                         \-> api:5000 (everything else)
+  |
+  |-- dev.seaming.s10drd.com -> seaming-web:8082
+  |-- dev.mapy.s10drd.com ----> floorplan:80
+  |-- order.s10drd.com -------> ordering-web:8083
+  
+[api:5000]
+  +--> sqlserver:1433       (GeoffERP database)
+  +--> minio:9000           (file uploads)
+  +--> d365bc-mock:3200     (vendor/item sync)
+
+[auth-proxy:3100]
+  +--> sqlserver:1433       (user lookup + password check)
+```
+
+### Cloud-to-local mapping
+
+| Production | Local | Container |
 |---|---|---|
-| 443 | Caddy (HTTPS) | `https://dev.s10drd.com` etc. |
-| 80 | Caddy (HTTP) | Redirects to HTTPS |
-| 1433 | SQL Server | `localhost,1433` (for tools like SSMS or Azure Data Studio) |
-| 3000 | React dev server | Via Caddy only (don't use directly) |
-| 3100 | Auth proxy | Via Caddy only |
-| 3200 | D365 BC mock | Internal container-to-container only |
-| 5001 | API (direct) | `http://localhost:5001` (for debugging) |
-| 9000 | MinIO S3 API | Internal |
-| 9001 | MinIO Console | `http://localhost:9001` (admin: minioadmin/minioadmin) |
+| AWS Cognito | auth-proxy (HS256 JWT) | `geoff-auth-proxy` |
+| Microsoft D365 Business Central | d365bc-mock (in-memory) | `geoff-d365bc-mock` |
+| AWS S3 | MinIO | `geoff-minio` |
+| Azure SQL / RDS | Azure SQL Edge | `geoff-sqlserver` |
+| CloudFront / ALB | Caddy | `geoff-caddy` |
+| Route53 DNS | /etc/hosts | (host machine) |
+| ACM Certificates | mkcert | (host machine) |
 
 ---
 
-## Daily workflow
+## Port map
 
-### Starting up
+| Port | Service | Access |
+|---|---|---|
+| 80 | Caddy HTTP | `http://dev.s10drd.com` (redirects to 443) |
+| 443 | Caddy HTTPS | `https://dev.s10drd.com` (main entry point) |
+| 1433 | SQL Server | `localhost,1433` (Azure Data Studio / SSMS) |
+| 3000 | React dev server | Via Caddy only (don't browse directly) |
+| 3100 | Auth proxy | Via Caddy only |
+| 3200 | D365 BC mock | Container-internal only |
+| 5001 | .NET API (host-mapped) | `http://localhost:5001` (direct debug) |
+| 9000 | MinIO S3 API | Container-internal |
+| 9001 | MinIO web console | `http://localhost:9001` (login: minioadmin/minioadmin) |
+
+---
+
+## Daily commands
+
+### Start everything
 
 ```bash
-cd ~/NANCY/local-dev
-docker compose up -d
-
-cd ~/NANCY/Geoff-ERP
-npm start
+cd ~/NANCY/local-dev && docker compose up -d
+cd ~/NANCY/Geoff-ERP && npm start
+# Open https://dev.s10drd.com
 ```
 
-Then open `https://dev.s10drd.com`.
-
-### Shutting down
+### Stop everything
 
 ```bash
-cd ~/NANCY/local-dev
-docker compose down
+cd ~/NANCY/local-dev && docker compose down
+# Ctrl+C in the npm start terminal
 ```
 
-Your data is preserved in Docker volumes. Next time you `docker compose up -d`, everything comes back.
+### Restart a single service
 
-### Nuking everything and starting fresh
+```bash
+docker compose restart api           # Restart just the API
+docker compose restart auth-proxy    # Restart just auth
+docker compose logs -f api           # Tail API logs
+```
+
+### Full reset (deletes all data)
 
 ```bash
 cd ~/NANCY/local-dev
-docker compose down -v    # -v removes volumes (deletes all data!)
-docker compose up -d      # Containers start with empty databases
-# Re-seed the database (Step 7)
+docker compose down -v         # Remove containers + volumes
+docker compose build --no-cache  # Rebuild from scratch
+docker compose up -d sqlserver   # Start SQL first
+# Wait for healthy, then re-seed (Step 7)
+docker compose up -d             # Start everything
 ```
 
 ---
 
 ## Troubleshooting
 
-### "Cannot connect to dev.s10drd.com"
+### Cannot connect to dev.s10drd.com
 
-1. Check `/etc/hosts` has the entries from Step 4
-2. Check Caddy is running: `docker compose ps caddy`
-3. Check the React frontend is running at port 3000: `curl http://localhost:3000`
-4. Flush DNS cache (Step 4)
+```bash
+# 1. Check hosts file
+grep s10drd /etc/hosts                                    # [MAC]
+type C:\Windows\System32\drivers\etc\hosts | findstr s10drd  # [WIN]
 
-### "Login fails" or "401 Unauthorized"
+# 2. Check Caddy is up
+docker compose ps caddy
 
-1. Check auth-proxy is healthy: `docker compose ps auth-proxy`
-2. Check auth-proxy logs: `docker compose logs auth-proxy`
-3. Verify the database was seeded (Step 7) — auth-proxy needs the `MS_User` table
-4. Make sure you're using password `LocalDev123!`
+# 3. Check React is running
+curl -s http://localhost:3000 | head -1
 
-### API returns 500 errors
+# 4. Check Caddy logs
+docker compose logs caddy
+```
 
-1. Check API logs: `docker compose logs api`
-2. Common cause: `appsettings.Local.json` is missing or has invalid values
-3. Common cause: SQL Server isn't healthy yet — wait 30 seconds and retry
-4. Check the `appsettings.json` fix was applied (Step 2, Patch 2)
+### Login fails / 401
 
-### Docker build fails on Apple Silicon Mac
+```bash
+# 1. Check auth-proxy
+docker compose ps auth-proxy
+docker compose logs auth-proxy | tail -20
 
-1. Make sure Rosetta 2 is installed: `softwareupdate --install-rosetta`
-2. The API and floorplan containers are forced to `linux/amd64` — this is normal and runs via emulation
-3. If builds hang, increase Docker Desktop memory to 8GB+ (Settings > Resources)
+# 2. Verify DB has users
+docker run --rm --network local-dev_default \
+  mcr.microsoft.com/mssql-tools \
+  /opt/mssql-tools/bin/sqlcmd \
+  -S geoff-sqlserver -U sa -P 'LocalDev123!' \
+  -Q "SELECT COUNT(*) FROM GeoffERP.dbo.MS_User" -h -1 -W
+# Expected: 50+ users
+```
 
-### Docker build fails on Windows
+### API returns 500
 
-1. Make sure Docker Desktop is set to **Linux containers** (not Windows containers)
-2. Right-click Docker Desktop tray icon > "Switch to Linux containers" if needed
-3. If you get line-ending errors in container scripts, configure git: `git config --global core.autocrlf input`
+```bash
+docker compose logs api | tail -30
+# Common causes:
+# - appsettings.Local.json missing or invalid JSON
+# - SQL Server not healthy yet (wait 30s, retry)
+# - PLACEHOLDER_CUSTOMER_PARENT_ID not fixed (Step 2)
+```
 
-### Port conflicts
+### Docker build fails (Apple Silicon)
 
-| If port is busy | Likely culprit | Fix |
-|---|---|---|
-| 80 or 443 | IIS (Windows) or Apache | Stop IIS: `iisreset /stop` |
-| 1433 | Local SQL Server | Stop the local SQL Server service |
-| 3000 | Another React app | Kill it or change CRA port: `PORT=3001 npm start` |
+```bash
+# Ensure Rosetta 2 is installed
+softwareupdate --install-rosetta --agree-to-license
 
-### MinIO console
+# Increase Docker memory to 8GB
+# Docker Desktop > Settings > Resources > Memory
 
-Browse to `http://localhost:9001` and login with `minioadmin` / `minioadmin` to inspect uploaded files.
+# If .NET build hangs, try:
+docker compose build api --no-cache
+```
 
-### Connecting to the database directly
+### Docker build fails (Windows)
 
-Use **Azure Data Studio** (free, cross-platform) or **SSMS** (Windows only):
+```powershell
+# 1. Ensure Linux containers mode
+# Right-click Docker tray > "Switch to Linux containers" if available
 
-- **Server:** `localhost,1433`
-- **Authentication:** SQL Login
-- **Username:** `sa`
-- **Password:** `LocalDev123!`
-- **Database:** `GeoffERP`
+# 2. Fix line endings
+git config --global core.autocrlf input
+# Re-clone repos if line endings are already wrong
+
+# 3. Check WSL 2 is installed
+wsl --status
+```
+
+### Port 80/443 already in use
+
+```bash
+# [MAC] Check what's using the port:
+sudo lsof -i :80
+sudo lsof -i :443
+
+# [WIN] Check what's using the port:
+netstat -ano | findstr :80
+netstat -ano | findstr :443
+# IIS fix: iisreset /stop
+# Apache fix: net stop Apache2.4
+```
+
+### Port 1433 already in use (local SQL Server running)
+
+```bash
+# [MAC]
+brew services stop mssql-server 2>/dev/null
+
+# [WIN]
+net stop MSSQLSERVER       # Stop default instance
+net stop "SQL Server (MSSQLEXPRESS)"  # Stop Express
+```
 
 ---
 
-## Files reference
+## Connecting to the database
 
-Everything in `local-dev/`:
+Use **Azure Data Studio** (free, Mac + Windows) or **SSMS** (Windows only).
 
-```
-local-dev/
-  docker-compose.yml         -- Orchestrates all 9 containers
-  Caddyfile                  -- Reverse proxy routing (5 hostnames)
-  Dockerfile.api             -- Builds .NET API (SDK 6.0, runtime 3.1)
-  Dockerfile.floorplan       -- Builds Python floorplan service
-  .env                       -- Shared secrets (DB, JWT, AES, MinIO)
-  appsettings.Local.json     -- .NET API config overrides (mounted into container)
-  appsettings.Local.example  -- Template if you need to recreate the above
-  restore-clean.sql          -- 443 MB database seed (SQL script)
-  hosts-entries.txt          -- /etc/hosts entries to add
-  setup.ps1                  -- One-time setup script (Windows-oriented)
-  start.ps1                  -- Start script
-  stop.ps1                   -- Stop script
-  restore-db.ps1             -- Database restore script (.bak format)
-  certs/
-    cert.pem                 -- TLS certificate (generate with mkcert)
-    key.pem                  -- TLS private key
-  auth-proxy/                -- Node.js auth service (replaces Cognito)
-    Dockerfile
-    package.json
-    src/                     -- Express app (JWT generation, user lookup, etc.)
-  d365bc-mock/               -- Node.js D365 BC mock
-    Dockerfile
-    package.json
-    src/                     -- Express app (OAuth tokens, items, customers, sales, etc.)
-```
-
----
-
-## Required repo patches (summary)
-
-Only 2 files in `GeoffERP-API` need changes. Everything else runs unmodified.
-
-| File | Change | Why |
-|---|---|---|
-| `GeoffERP-API/GEOFF.API/Startup.cs` | Add `if (env == "Local")` JWT auth branch | Use local symmetric key instead of Cognito |
-| `GeoffERP-API/GEOFF.API/appsettings.json` | `PLACEHOLDER_CUSTOMER_PARENT_ID` -> `0` | Fix invalid JSON so API can parse config |
-
-Both changes are env-gated and safe for production. The `local_dev_env` branch on each repo should already have them.
+| Setting | Value |
+|---|---|
+| Server | `localhost,1433` |
+| Authentication | SQL Login |
+| User | `sa` |
+| Password | `LocalDev123!` |
+| Database | `GeoffERP` |
+| Trust server certificate | Yes |
