@@ -16,6 +16,7 @@ function handleToken(req, res) {
   });
 }
 
+router.post('/', handleToken);
 router.post('/:tenant/oauth2/v2.0/token', handleToken);
 router.post('/oauth2/v2.0/:tenant/token', handleToken);
 router.post('/common/oauth2/v2.0/token', handleToken);

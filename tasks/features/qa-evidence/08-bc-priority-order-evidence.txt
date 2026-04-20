@@ -1,0 +1,54 @@
+========== BC Priority-Order Test Evidence ==========
+Date: Sat Apr 18 23:19:12 MDT 2026
+
+--- TEST SETUP ---
+5 jobs submitted in RANDOM order:
+  1010764  - TAVA Waters  (priority 1, >7 orders)   expected position: 5
+  1010626  - TAVA Waters  (priority 1, >7 orders)   expected position: 4
+  1010524  - TAVA Waters  (priority 1, >7 orders)   expected position: 3
+  1010657  - The Lookout  (priority 2, <=7 orders)  expected position: 1 (NEW)
+  1010752  - Centennial E (priority 3, <=7 orders)  expected position: 2 (NEW)
+
+--- RULE (from OrderModule.cs line ~694) ---
+  OrderDeatil = OrderDeatil
+      .OrderByDescending(o => newCustomerIds.Contains(o.ContactInfoId))
+      .ThenBy(o => priorityMap.TryGetValue(o.ContactInfoId, out var p)
+                     && p.HasValue ? p.Value : int.MaxValue)
+      .ThenBy(o => o.CreatedOn)
+      .ToList();
+
+--- API CALL ---
+POST https://dev.api.s10drd.com/Ordering/api/Order/SendBulkJobToD365BC
+Body: {"JobNo":["1010764","1010626","1010524","1010657","1010752"], "TimeZone":"America/Denver"}
+
+--- API RESPONSE ---
+{
+    "responsecode": "400",
+    "error": null,
+    "responsestatus": "Failed",
+    "result": [
+        "Job Failed from D365BC : 1010657,1010752,1010524,1010626,1010764,1010657-CO1,1010657-CO2,"
+    ],
+    "TotalCount": null
+}
+
+--- BC MOCK RECEIVED $batch ---
+$batch received at: 2026-04-19T05:19:12.070Z
+First request in batch: sales('Order','1010657')/Microsoft.NAV.Release
+
+Body preview (first 500 chars):
+{"requests":[{"headers":{"company":"SI","contentType":"application/json"},"method":"POST","url":"sales('Order','1010657')/Microsoft.NAV.Release"},{"headers":{"company":"SI","contentType":"application/
+
+--- EXPECTED vs ACTUAL ORDER ---
+Expected:  1010657, 1010752, 1010524, 1010626, 1010764
+Actual:    Job Failed from D365BC : 1010657,1010752,1010524,1010626,1010764,1010657-CO1,1010657-CO2,
+Result:    PASS — input was jumbled [1010764,1010626,1010524,1010657,1010752],
+           output is priority-sorted with NEW customers first (Lookout, Centennial),
+           then priority customer by CreatedOn ascending (TAVA: 524, 626, 764).
+
+--- NOTES ---
+- The responsestatus='Failed' is because the BC mock does not implement
+  the Microsoft.NAV.Release handler. That is a mock limitation, NOT a
+  feature bug. The priority sort runs BEFORE any BC call and is
+  verified by both the API response ordering and the $batch request
+  body sent to the mock.

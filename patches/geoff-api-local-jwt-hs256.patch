@@ -1,0 +1,43 @@
+diff --git a/GEOFF.API/Startup.cs b/GEOFF.API/Startup.cs
+index e5f42462..5fdcbd35 100644
+--- a/GEOFF.API/Startup.cs
++++ b/GEOFF.API/Startup.cs
+@@ -141,23 +141,28 @@ namespace GEOFF.API
+ 
+             var AWSCognito = Configuration.GetSection("AWSCognito");
+ 
++            // LOCAL-DEV PATCH (do not commit): both IdToken and AccessToken schemes validate
++            // HS256 tokens from the local auth-proxy using the same symmetric key. This
++            // replaces the production behavior where IdToken validates against AWS Cognito
++            // via OIDC discovery (which fails offline with IDX20803). See CLAUDE.md HARD
++            // CONSTRAINT #1 — keep this in working tree only.
+             services.AddAuthentication(o => o.DefaultScheme = "IdToken")
+                .AddJwtBearer("IdToken", options =>
+                {
+-
+-                   options.Audience = AWSCognito.GetSection("ClientId").Value;
++                   options.RequireHttpsMetadata = false;
++                   options.SaveToken = true;
++                   options.IncludeErrorDetails = true;
+                    options.TokenValidationParameters = new TokenValidationParameters()
+                    {
+-                       ValidateIssuer = false,
+-                       ValidIssuer = $"https://" + AWSCognito.GetSection("IdentityProvider").Value + "/" + AWSCognito.GetSection("UserPoolId").Value,
+-                       ValidateLifetime = true,
+-                       LifetimeValidator = (before, expires, token, param) => expires > DateTime.UtcNow,
++                       ClockSkew = TimeSpan.FromMinutes(0),
++                       ValidateIssuer = true,
+                        ValidateAudience = true,
++                       ValidateLifetime = true,
++                       ValidateIssuerSigningKey = true,
++                       ValidIssuer = Configuration["Jwt:Issuer"],
++                       ValidAudience = Configuration["Jwt:Audience"],
++                       IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(Configuration["Jwt:Key"]))
+                    };
+-                   options.IncludeErrorDetails = true;
+-                   options.SaveToken = true;
+-                   options.Authority = $"https://" + AWSCognito.GetSection("IdentityProvider").Value + "/" + AWSCognito.GetSection("UserPoolId").Value;
+-
+                })
+                .AddJwtBearer("AccessToken", options =>
+                {
