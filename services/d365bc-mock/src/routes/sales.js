@@ -2,6 +2,26 @@ const express = require('express');
 const { putSalesOrder, releaseSalesOrder, deleteSalesOrder, getSalesOrder } = require('../store');
 const router = express.Router();
 
+function buildSalesActionSuccess(jobNo, action) {
+  if (action === 'Microsoft.NAV.Release') {
+    return {
+      value: JSON.stringify({
+        documentType: 'Order',
+        documentNo: jobNo,
+        success: true,
+      }),
+    };
+  }
+
+  if (action === 'Microsoft.NAV.Delete') {
+    return {
+      value: `deleted successfully ${jobNo}`,
+    };
+  }
+
+  return { value: 'ok' };
+}
+
 // POST .../sales
 router.post(
   /^\/v2\.0\/[^/]+\/[^/]+\/api\/standardInteriors\/nancyERP\/v1\.0\/companies\([^)]+\)\/sales$/,
@@ -40,12 +60,12 @@ router.post(
     if (action === 'Microsoft.NAV.Release') {
       const order = releaseSalesOrder(jobNo);
       if (!order) return res.status(404).json({ error: { code: 'NotFound', message: `Order ${jobNo} not found` } });
-      return res.json({ value: 'released successfully', jobNo });
+      return res.json(buildSalesActionSuccess(jobNo, action));
     }
     if (action === 'Microsoft.NAV.Delete') {
       const existed = deleteSalesOrder(jobNo);
       if (!existed) return res.status(404).json({ error: { code: 'NotFound', message: `Order ${jobNo} not found` } });
-      return res.json({ value: 'deleted successfully', jobNo });
+      return res.json(buildSalesActionSuccess(jobNo, action));
     }
     res.status(400).json({ error: { code: 'BadAction', message: `Unknown action ${action}` } });
   }

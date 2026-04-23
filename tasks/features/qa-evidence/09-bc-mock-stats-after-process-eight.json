@@ -1,0 +1,124 @@
+{
+  "payloadOrder": [
+    "1010660",
+    "1010638",
+    "1010626",
+    "1010537",
+    "1010524",
+    "1010498",
+    "1010436",
+    "1009866"
+  ],
+  "observedOrder": [
+    "1009866",
+    "1010436",
+    "1010498",
+    "1010524",
+    "1010537",
+    "1010626",
+    "1010638",
+    "1010660"
+  ],
+  "stats": {
+    "items": 0,
+    "customers": 0,
+    "salesOrders": 8,
+    "ordersReleased": 8,
+    "recentReleasedOrders": [
+      {
+        "jobNo": "1010498",
+        "status": "released",
+        "releasedAt": "2026-04-22T22:15:06.548Z",
+        "autoCreatedOnRelease": true
+      },
+      {
+        "jobNo": "1010524",
+        "status": "released",
+        "releasedAt": "2026-04-22T22:15:06.548Z",
+        "autoCreatedOnRelease": true
+      },
+      {
+        "jobNo": "1010537",
+        "status": "released",
+        "releasedAt": "2026-04-22T22:15:06.548Z",
+        "autoCreatedOnRelease": true
+      },
+      {
+        "jobNo": "1010626",
+        "status": "released",
+        "releasedAt": "2026-04-22T22:15:06.548Z",
+        "autoCreatedOnRelease": true
+      },
+      {
+        "jobNo": "1010638",
+        "status": "released",
+        "releasedAt": "2026-04-22T22:15:06.548Z",
+        "autoCreatedOnRelease": true
+      },
+      {
+        "jobNo": "1010660",
+        "status": "released",
+        "releasedAt": "2026-04-22T22:15:06.548Z",
+        "autoCreatedOnRelease": true
+      },
+      {
+        "jobNo": "1009866",
+        "status": "released",
+        "releasedAt": "2026-04-22T22:15:06.547Z",
+        "autoCreatedOnRelease": true
+      },
+      {
+        "jobNo": "1010436",
+        "status": "released",
+        "releasedAt": "2026-04-22T22:15:06.547Z",
+        "autoCreatedOnRelease": true
+      }
+    ],
+    "salespersons": 0,
+    "commissions": 0,
+    "tokens": 1,
+    "recentBatchReleaseOrders": [
+      {
+        "at": "2026-04-22T22:15:06.548Z",
+        "path": "/v2.0/mock-tenant/local/api/standardInteriors/nancyERP/v1.0/$batch",
+        "order": [
+          "1009866",
+          "1010436",
+          "1010498",
+          "1010524",
+          "1010537",
+          "1010626",
+          "1010638",
+          "1010660"
+        ]
+      }
+    ],
+    "recentRequests": [
+      {
+        "at": "2026-04-22T22:15:06.548Z",
+        "method": "POST",
+        "path": "/v2.0/mock-tenant/local/api/standardInteriors/nancyERP/v1.0/$batch",
+        "status": 200,
+        "bodyPreview": "{\"requests\":[{\"headers\":{\"company\":\"SI\",\"contentType\":\"application/json\"},\"method\":\"POST\",\"url\":\"sales('Order','1009866')/Microsoft.NAV.Release\"},{\"headers\":{\"company\":\"SI\",\"contentType\":\"application/",
+        "batchReleaseOrder": [
+          "1009866",
+          "1010436",
+          "1010498",
+          "1010524",
+          "1010537",
+          "1010626",
+          "1010638",
+          "1010660"
+        ]
+      },
+      {
+        "at": "2026-04-22T22:15:06.539Z",
+        "method": "POST",
+        "path": "/",
+        "status": 200,
+        "bodyPreview": "{\"grant_type\":\"client_credentials\",\"client_id\":\"mock-client\",\"client_secret\":\"mock-secret\",\"scope\":\"https://api.businesscentral.dynamics.com/.default\"}",
+        "batchReleaseOrder": null
+      }
+    ]
+  }
+}

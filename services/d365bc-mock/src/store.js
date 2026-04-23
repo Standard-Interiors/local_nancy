@@ -20,13 +20,30 @@ const store = {
   tokens: new Map(),
 };
 
+function extractBatchReleaseOrder(body) {
+  const requests = body?.requests;
+  if (!Array.isArray(requests)) return null;
+
+  const releaseOrder = requests
+    .map((req) => {
+      const url = req?.url || '';
+      const match = url.match(/^sales\('([^']+)','([^']+)'\)\/Microsoft\.NAV\.Release$/i);
+      return match ? match[2] : null;
+    })
+    .filter(Boolean);
+
+  return releaseOrder.length > 0 ? releaseOrder : null;
+}
+
 function logRequest(method, path, status, body) {
+  const batchReleaseOrder = extractBatchReleaseOrder(body);
   store.requestLog.unshift({
     at: new Date().toISOString(),
     method,
     path,
     status,
     bodyPreview: body ? JSON.stringify(body).substring(0, 200) : null,
+    batchReleaseOrder,
   });
   if (store.requestLog.length > 500) store.requestLog.pop();
 }
@@ -120,9 +137,24 @@ function putSalesOrder(order) {
   return stored;
 }
 
+function ensureSalesOrder(jobNo, seed = {}) {
+  const existing = store.salesOrders.get(jobNo);
+  if (existing) return existing;
+
+  return putSalesOrder({
+    jobNo,
+    documentNo: jobNo,
+    documentType: 'Order',
+    status: 'Open',
+    customerNo: seed.customerNo || null,
+    company: seed.company || 'SI',
+    _mockAutoCreatedOnRelease: true,
+    _mockSeedReason: seed.reason || 'release',
+  });
+}
+
 function releaseSalesOrder(jobNo) {
-  const order = store.salesOrders.get(jobNo);
-  if (!order) return null;
+  const order = ensureSalesOrder(jobNo, { reason: 'release' });
   order._status = 'released';
   order._releasedAt = new Date().toISOString();
   order._etag = uuid();
@@ -171,14 +203,32 @@ function issueToken(clientId) {
 
 // ---------- Stats / inspection ----------
 function stats() {
+  const releasedOrders = [...store.salesOrders.values()]
+    .filter(o => o._status === 'released')
+    .sort((a, b) => (b._releasedAt || '').localeCompare(a._releasedAt || ''));
+
   return {
     items: store.items.size,
     customers: store.customers.size,
     salesOrders: store.salesOrders.size,
-    ordersReleased: [...store.salesOrders.values()].filter(o => o._status === 'released').length,
+    ordersReleased: releasedOrders.length,
+    recentReleasedOrders: releasedOrders.slice(0, 25).map(order => ({
+      jobNo: order.jobNo,
+      status: order._status,
+      releasedAt: order._releasedAt || null,
+      autoCreatedOnRelease: Boolean(order._mockAutoCreatedOnRelease),
+    })),
     salespersons: store.salespersons.size,
     commissions: store.commissions.length,
     tokens: store.tokens.size,
+    recentBatchReleaseOrders: store.requestLog
+      .filter((req) => Array.isArray(req.batchReleaseOrder) && req.batchReleaseOrder.length > 0)
+      .slice(0, 10)
+      .map((req) => ({
+        at: req.at,
+        path: req.path,
+        order: req.batchReleaseOrder,
+      })),
     recentRequests: store.requestLog.slice(0, 20),
   };
 }
@@ -188,7 +238,7 @@ module.exports = {
   logRequest,
   putItem, getItem, queryItems, getItemByBcId, updateItemPicture,
   putCustomer, getCustomer,
-  putSalesOrder, releaseSalesOrder, deleteSalesOrder, getSalesOrder,
+  putSalesOrder, ensureSalesOrder, releaseSalesOrder, deleteSalesOrder, getSalesOrder,
   putSalesperson, getSalesperson,
   addCommission,
   issueToken,

@@ -1,110 +1,162 @@
-# Customer Priority Feature — QA Report
+# Customer Priority Feature — NANCY QA Report
 
-**Feature branch:** `feature/customer_priority` (Geoff-ERP + GeoffERP-API, both at commit `911de973`)
-**QA environment:** Local Docker (`local-dev` compose project, 8/8 containers healthy)
-**Tested by:** Claude Code (Chrome MCP + API curl)
-**Date:** 2026-04-18
-**Status:** **GREEN — Ready for QA hand-off**
+**Scope:** NANCY only. This report covers the NANCY admin screen, import flow, Existing Orders visuals, and `Process Orders` / local BC-mock behavior. Scheduler verification is tracked separately in [QA-Report-Scheduler-Customer-Priority.md](./QA-Report-Scheduler-Customer-Priority.md).
+**Feature branches:** `feature/customer_priority` (`GeoffERP-API @ 9ae4edf9`, `Geoff-ERP @ d1d468b`)
+**QA environment:** Local NANCY on this machine. Core path services are up; `sqlserver`, `auth-proxy`, `d365bc-mock`, and `minio` report `healthy`, while `api`, `caddy`, `ordering-web`, and `seaming-web` are up without Docker healthchecks.
+**Tested by:** Codex (Chrome MCP + API curl + local logs / DB spot checks)
+**Refresh date:** 2026-04-22 (MDT)
+**Status:** **AMBER — the NANCY admin/import path is working locally, but the current live 8-order BC proof still shows the release batch arriving in the reverse of the visible ordered payload.**
 
 ---
 
 ## 1. What Changed
 
 ### 1.1 Business goal
-Let the sales office tell Business Central which customers should be **prioritized for material allocation** when several jobs are released at the same time. In today's system, BC processes orders first-come-first-served, so a small new customer can starve a high-value tier-1 property of rolls. The new feature guarantees:
+Let the sales office tell NANCY / BC which customers should be prioritized for material allocation when several jobs are released at the same time. The current NANCY feature contract is:
 
-1. **New customers** (anyone with 7 or fewer lifetime orders) ship first — keeps unhappy-customer risk low.
-2. After that, **priority-tier customers** (uploaded by the Admin) ship in numeric priority order (1 → 2 → 3…).
-3. Everyone else follows in order-created ascending.
+1. **NEW customers** are properties created within the configured **New Customer Window** and still within the configured **Order Threshold**.
+2. **Priority customers** are properties on the uploaded VIP list for their store that do **not** meet the NEW rule.
+3. Everyone else renders and sorts normally.
 
-### 1.2 New admin screen: Customer Priority
-Admins upload a CSV/XLSX of priority properties per store. Import is **wipe-and-replace** — uploading a new file for a store clears that store's priorities and inserts fresh rows in one transaction.
+Default settings on this local environment:
+- `New Customer Window (days) = 60`
+- `Order Threshold = 7`
+- `Feature enabled (master) = ON`
+- `Emit scheduler fields = ON`
 
-- **Route:** `/customer-priority` (Admin menu → Customer Priority)
-- **Columns:** `Property Name`, `Management Company`, `Priority Number`
-- **Dedup:** rows with the same `Property Name` (case-insensitive, trimmed) are collapsed to the first occurrence; UI toast reports `Imported: N, Duplicates removed: M`.
-- **Per-store:** each row is attached to the store currently selected in the "Filter by Store" dropdown. Each store keeps its own priority list.
+### 1.2 Admin screen: Customer Priority
+Admins manage Customer Priority at `/customer-priority`.
 
-### 1.3 Existing Orders — visual cues
-The Existing Orders list now has a **Priority column** and **color-coded rows** to make allocation-sensitive orders visible at a glance.
+Per-store list behavior:
+- Upload is **wipe-and-replace** for the selected store.
+- Import deduplicates by trimmed, case-insensitive property name.
+- The live seeded Denver list currently contains 5 rows.
 
-| Rule | Row color | Badge |
+Global settings behavior:
+- **Feature enabled (master)**: master kill switch for Existing Orders coloring, default sort, and Process Orders ordering behavior.
+- **Emit scheduler fields**: still exists on the NANCY screen and still controls the API payload shape, but downstream Scheduler behavior is out of scope for this report.
+- **New Customer Window (days)** and **Order Threshold**: runtime rule parameters persisted in the DB and applied on the next request.
+- The page shows **Last changed** from the DB-backed settings row.
+
+### 1.3 Existing Orders visual cues
+The Existing Orders grid includes a **Priority** column and row tinting:
+
+| Rule | Row color | Badge / value |
 |---|---|---|
-| Customer has ≤ 7 lifetime orders | **orange** `rgb(255,224,178)` | `NEW` badge (yellow) |
-| Customer is on the priority list AND has > 7 orders | **light blue** `rgb(187,222,251)` | Priority # (e.g. "1") |
-| Insufficient material | red | — (pre-existing) |
-| Everyone else | no tint | — |
+| Property meets current NEW rule | `rgb(255, 224, 178)` | `NEW` |
+| Property is store-priority and not NEW | `rgb(187, 222, 251)` | Priority number (`1`, `2`, ...) |
+| Insufficient material | red font | pre-existing behavior |
+| Everyone else | no tint | blank |
 
-Precedence (when a row could match more than one): **orange > blue > red > none**.
+Precedence remains:
+- `NEW` orange
+- Priority blue
+- pre-existing red shortage text remains visible
+- none
 
-### 1.4 Process Orders — priority-aware release to BC
-When the user selects multiple jobs and clicks **Process Orders**, the API now sorts the jobs by the rule in §1.1 *before* calling the BC `$batch` endpoint. BC therefore sees priority customers first and allocates material to them first.
+When master is OFF:
+- default sort reverts to legacy
+- UI coloring / default priority behavior reverts to legacy
 
-**The sort is skipped when only one job is being released** (addons, shortages, quality jobs) — sorting is a no-op and the extra query is wasted work.
+### 1.4 Process Orders / BC release behavior
+There are now two separate pieces of evidence for the NANCY release path:
 
-### 1.5 New files (not yet committed — uncommitted on the feature branch)
+1. **Operator success proof**  
+   We re-ran `Process Orders` in the Existing Orders UI for `Premier Lofts` job `1010659`. The row flipped from `Processed = No` to `Processed = Yes`, proving the NANCY action itself is working locally.
 
-**API (`GeoffERP-API`):**
-- `GEOFF.API/Areas/User/Controllers/CustomerPriorityController.cs` (new)
-- `GEOFF.BUSINESS/UserModule/CustomerPriorityModule.cs` (new)
-- `GEOFF.CORE/DBModels/TR_CustomerPriority.cs` (new)
-- `GEOFF.CORE/ViewModel/User/CustomerPriorityViewModel.cs` (new)
-- `GEOFF.BUSINESS/OrderModule/OrderModule.cs` (modified — added priority sort in `SendBulkJobToD365BC`)
-- `GEOFF.CORE/DBModels/GeoffErpDBContext.cs` (modified — DbSet registration)
-- `GEOFF.API/RoleAccess/RoleAccess.json` (modified — menu wiring)
-- `GEOFF.API/Startup.cs` + `appsettings.json` (local-dev patches)
+2. **8-order BC sequence proof**  
+   We sent a clean 8-order Denver / TAVA Waters batch into NANCY and captured the exact order observed by the local BC mock. The ordered payload sent into NANCY was:
 
-**Front-end (`Geoff-ERP`):**
-- `src/components/pages/admin/customerPriority/` (new folder — `CustomerPriorityList.jsx`, `ImportPriority.jsx`)
-- `src/store/reducers/customerPriority/`, `src/store/saga/customerPriority/`, `src/_utils/constants/CustomerPriority.js` (new Redux wiring)
-- `src/_routes/adminRoute.js`, `src/store/store.js`, `src/store/saga/indexSaga.js` (modified — route + registration)
-- `src/components/pages/existingOrders/ExistingOrdersList.jsx` (modified — row colors + Priority column)
+   - `1010660`
+   - `1010638`
+   - `1010626`
+   - `1010537`
+   - `1010524`
+   - `1010498`
+   - `1010436`
+   - `1009866`
 
-### 1.6 Database
-New table **`TR_CustomerPriority`**:
+   The BC mock observed:
 
-| Column | Type | Notes |
-|---|---|---|
-| `CustomerPriorityId` | `int PK IDENTITY` | |
-| `ContactInfoId` | `int FK` → `TR_ContactInfo` | resolved at import time by `PropertyName + ManagementCompany` |
-| `PriorityNumber` | `int` | lower = higher priority |
-| `StoreId` | `int FK` → `MS_Store` | per-store list |
-| `UploadBatchId` | `uniqueidentifier` | one GUID per import, for audit |
-| `CreatedBy`, `CreatedOn`, `IsDeleted` | standard audit columns | |
+   - `1009866`
+   - `1010436`
+   - `1010498`
+   - `1010524`
+   - `1010537`
+   - `1010626`
+   - `1010638`
+   - `1010660`
+
+   Child orders appended in this proof run: `0`
+
+Current interpretation:
+- NANCY is definitely sending the batch to BC locally.
+- The local BC mock is definitely recording the sequence it received.
+- In the current live local run, the observed BC order is the reverse of the ordered payload sent into NANCY.
+
+### 1.5 Database / migrations
+Customer Priority spans two DB objects:
+
+1. **`TR_CustomerPriority`**
+   - per-store VIP priority rows
+   - currently seeded with 5 active Denver rows on this machine
+
+2. **`TR_CustomerPrioritySetting`**
+   - single-row global settings table on the current branch
+   - currently stores `IsEnabled=true`, `EmitSchedulerFields=true`, `NewCustomerWindowDays=60`, `NewCustomerOrderThreshold=7`
+
+Migration / data-migration set called out in the current branch / handover:
+- `20260419180000_AddCustomerPriorityTable`
+- `20260419180001_AddCustomerPriorityMenu.sql`
+- `20260420180000_AddCustomerPrioritySettingTable`
+- `20260420180001_SeedCustomerPrioritySetting.sql`
+- `20260420190000_AddCustomerPriorityFlagColumns`
 
 ---
 
-## 2. How to Reproduce / Use the Feature
+## 2. How To Reproduce / Use
 
-### 2.1 One-time setup (developer laptop)
+### 2.1 One-time setup on this machine
 ```bash
-cd ~/NANCY
-# Bring up the whole stack
+cd ~/NANCY/local-dev/docker
 docker compose -p local-dev up -d
-# Verify 8/8 containers healthy
-docker compose -p local-dev ps
 ```
 
-The local-dev stack provides a mock auth proxy, SQL Server, Caddy reverse proxy (TLS for `dev.s10drd.com`), D365BC mock, MinIO, ordering, seaming. Both the API and front-end run inside Docker.
+Access through Caddy / hosts-based routing:
+- `https://dev.s10drd.com`
+- `https://dev.api.s10drd.com`
 
-**Hosts required in `/etc/hosts`:**
-```
-127.0.0.1  dev.s10drd.com
-127.0.0.1  dev.api.s10drd.com
-```
+Test login:
+- `robert@standardinteriors.com / LocalDev123!`
 
-**Test login:** `robert@standardinteriors.com` / `LocalDev123!`
+### 2.2 Admin: review settings and priority list
+1. Log in.
+2. Go to **Admin** -> **Customer Priority**.
+3. Confirm the global settings panel loads.
+4. Confirm the selected store is **Denver**.
+5. Confirm the 5 seeded Denver priorities render in rank order.
 
-### 2.2 Admin: upload a priority list
-1. Log in → sidebar → **Admin** → click **Customer Priority**.
-2. In "Filter by Store," pick the store you're targeting (e.g. **Denver**).
-3. Click **Import CSV**.
-4. Drag-drop or click to pick a CSV/XLSX. File must have columns **Property Name**, **Management Company**, **Priority Number**.
-5. Click **Save**. A toast shows `Imported: N, Skipped: S, Duplicates removed: D`.
-6. The list refreshes to show the new priorities for that store only.
-7. To wipe everything for the store, use **Clear All**.
+Expected current values on this machine:
+- master ON
+- emit scheduler fields ON
+- window `60`
+- threshold `7`
 
-**Sample CSV:**
+### 2.3 Admin: import a priority list
+1. On `/customer-priority`, pick the target store.
+2. Click **Import CSV**.
+3. Supply a CSV/XLSX with:
+   - `Property Name`
+   - `Management Company`
+   - `Priority Number`
+4. Click **Save**.
+
+Expected behavior:
+- store-scoped wipe-and-replace
+- dedup by property name
+- list refreshes with the imported rows
+
+Sample CSV:
 ```csv
 Property Name,Management Company,Priority Number
 TAVA Waters,BH,1
@@ -114,151 +166,186 @@ Redstone Ranch Apartments,NALS - Redstone Ranch,4
 The Vue at Spring Creek,Greystar - Vue at Spring Creek,5
 ```
 
-### 2.3 Sales: see the priorities in Existing Orders
-1. Sidebar → **Existing Orders**.
-2. Rows are automatically color-coded. The new **Priority** column shows either a priority number ("1", "2"…) or a **`NEW`** badge.
-3. Filter by property name (e.g. "TAVA") to see only light-blue priority rows, or by a brand-new customer to see orange + `NEW`.
+### 2.4 Sales: inspect Existing Orders
+1. Go to **Existing Orders**.
+2. Use the **Priority** column to confirm the current state:
+   - `NEW` rows are orange
+   - store-priority established customers are blue
+3. Filter by `TAVA` to see the current blue priority rows.
 
-### 2.4 Sales: release orders in priority order
-1. From the Existing Orders grid, check the **Select** box on each job to be released.
+### 2.5 Sales: process orders and inspect BC proof
+1. Select target jobs in **Existing Orders**.
 2. Click **Process Orders**.
-3. The API sorts the selected jobs by priority (new customers first → priority # ascending → CreatedOn ascending) and hands the sorted list to BC as a single `$batch` request.
+3. Confirm NANCY returns success and the target row flips to `Processed = Yes`.
+4. For batch-order proof, inspect the local BC mock receipt and the raw text evidence:
+   - [`08-bc-priority-order-evidence.txt`](./08-bc-priority-order-evidence.txt)
+   - [8-order BC proof image](./09-bc-mock-release-proof-8-orders.png)
 
-### 2.5 API reference
-All endpoints are behind `[Authorize]` (JWT bearer). `[ServiceFilter(RoleAuthorizationFilter)]` is intentionally commented out on `CustomerPriorityController` to match the pattern of sibling controllers (`RolesController` etc.) — the local auth-proxy JWT does not emit a `roleaccess` claim. Re-enable when the role-access claim is wired into production tokens.
+### 2.6 API reference
+All endpoints are behind `[Authorize]` JWT bearer auth.
 
-| Method | Path | Body |
+Current Customer Priority endpoints:
+
+| Method | Path | Notes |
 |---|---|---|
-| `GET` | `/User/api/CustomerPriority/GetList?storeId={id}` | — |
+| `GET` | `/User/api/CustomerPriority/GetList?storeId={id}` | store-scoped priority rows |
 | `POST` | `/User/api/CustomerPriority/Import` | multipart: `file`, `storeId`, `userId` |
-| `DELETE` | `/User/api/CustomerPriority/Remove?storeId={id}` | — |
+| `DELETE` | `/User/api/CustomerPriority/Remove?storeId={id}` | clears a store list |
+| `GET` | `/User/api/CustomerPriority/GetSettings` | DB-backed global settings |
+| `POST` | `/User/api/CustomerPriority/SaveSettings?userId={id}` | saves master / scheduler / window / threshold |
 
-Validation responses:
-- `storeId <= 0` → HTTP 400 `"storeId is required and must be greater than 0"`
-- missing file → HTTP 400 `"No file uploaded"`
+Current NANCY ordering endpoints used in this QA pass:
 
-### 2.6 Rolling back
-The feature is entirely on `feature/customer_priority` in both repos. Revert by:
-```bash
-cd ~/NANCY/Geoff-ERP && git checkout blue
-cd ~/NANCY/GeoffERP-API && git checkout blue
-docker compose -p local-dev build api && docker compose -p local-dev up -d
-```
-The `TR_CustomerPriority` table can be dropped if desired — nothing else references it.
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/Ordering/api/Order/GetAllOrderInstallationDetail` | Existing Orders grid payload |
+| `POST` | `/Ordering/api/Order/SendBulkJobToD365BC` | NANCY Process Orders batch release |
+
+Validation responses retained:
+- `storeId <= 0` -> `400 "storeId is required and must be greater than 0"`
+- missing file -> `400 "No file uploaded"`
+
+### 2.7 Rollback / ship notes
+Rollback now requires more than dropping `TR_CustomerPriority`.
+
+At minimum:
+- undo `TR_CustomerPriority`
+- undo `TR_CustomerPrioritySetting`
+- undo the Apr 20 EF migrations / seed row
+- undo the earlier admin menu patch
+
+Deployment / merge note from the current handover:
+- expect an `OrderingRepository.cs` conflict against `blue`
 
 ---
 
 ## 3. Test Evidence
 
-### T1 — Admin menu exposes the new screen
-The **Customer Priority** button appears as the 8th admin action button.
+### T1 — Admin menu exposes the screen
+The **Customer Priority** button is present in the Admin menu for the seeded admin role.
 
 ![Admin page with Customer Priority button](./01-admin-page-customer-priority-button.png)
 
-### T2 — Customer Priority list page loads with 5 seeded priorities
-Navigate to `/customer-priority`, pick Denver in the store filter, list renders the 5 priorities in rank order.
+### T2 — Customer Priority page loads with settings + seeded priorities
+Live refresh screenshot from the current environment. The page includes the global settings panel above the per-store list.
 
 ![Customer Priority list page](./02-customer-priority-list.png)
 
 ### T3 — Import CSV modal opens clean
-Click **Import CSV** → modal appears with dropzone and *"Only `*.xls`, `*.xlsx` and `*.csv` files will be accepted"* hint.
+The import modal still opens with the expected file-type hint.
 
 ![Import CSV modal — empty state](./03-import-csv-modal-open.png)
 
 ### T4 — File selected state
-Attaching a CSV shows the "Uploaded Files" list with the file name and a remove-all control.
+The existing attached-file screenshot still reflects the modal behavior after file selection.
 
 ![Import CSV modal with file attached](./04-import-csv-file-selected.png)
 
-### T5 — Import validation (API-level; server side)
-Validation was confirmed with direct `POST /CustomerPriority/Import` calls (UI `file_upload` was blocked by Chrome extension security; the server-side behavior is the source of truth):
+### T5 — Retained import validation responses
+
+These exact payloads are retained from the earlier API validation pass. They still match the controller-level validation rules on the current branch, but the counts below were not freshly re-run during this markdown split:
 
 | Scenario | HTTP | Body |
 |---|---|---|
-| Valid CSV (6 rows, 1 dup of TAVA Waters) | 200 | `{totalImported:5, totalDuplicates:1, totalSkipped:0}` |
+| Valid CSV (6 rows, 1 duplicate TAVA row) | 200 | `{totalImported:5, totalDuplicates:1, totalSkipped:0}` |
 | `storeId=0` | 400 | `"storeId is required and must be greater than 0"` |
-| no file | 400 | `"No file uploaded"` (matches UI toast exactly) |
-| list after wipe-and-replace import | 200 | 5 rows — no duplicates survived |
+| no file | 400 | `"No file uploaded"` |
 
-### T6 — Existing Orders: NEW customers are orange with yellow `NEW` badge
-Default view, no filter. Customers with ≤ 7 lifetime orders are colored orange. Some rows are priority-listed (e.g. The Lookout at Broadmoor is priority #2, Centennial East is priority #3) but still show orange+`NEW` because the **new-customer rule has precedence over the priority rule**.
+### T6 — Existing Orders renders orange `NEW` rows
+Live DOM verification still reports orange `NEW` rows as `rgb(255, 224, 178)`.
 
 ![Existing Orders — orange NEW rows](./05-existing-orders-orange-new-rows.png)
 
-### T7 — Existing Orders: priority customer with >7 orders is light blue
-Filter by "TAVA" — TAVA Waters is priority #1 and has > 7 orders, so every row is light-blue with a Priority value of `1`.
+### T7 — Existing Orders renders blue priority rows for TAVA
+Live DOM verification during this refresh still reported TAVA rows as `rgb(187, 222, 251)` with the priority value visible in the Priority column.
 
 ![Existing Orders — TAVA Waters blue priority rows](./06-existing-orders-blue-priority-tava.png)
 
-### T8 — Process Orders hands BC the jobs in priority order
-Five jobs submitted in deliberately jumbled order. API response and BC mock `$batch` both reflect the priority-sorted order. Raw evidence file: [`08-bc-priority-order-evidence.txt`](./08-bc-priority-order-evidence.txt).
+### T8 — Process Orders succeeds for a live local NANCY row
+The local operator proof still stands: `Premier Lofts` job `1010659` can be processed successfully from the Existing Orders screen, and the row flips to `Processed = Yes`.
 
-| Job | Customer | Priority | Lifetime orders | Expected rank |
-|---|---|---|---|---|
-| 1010764 | TAVA Waters | 1 | >7 | 5 |
-| 1010626 | TAVA Waters | 1 | >7 | 4 |
-| 1010524 | TAVA Waters | 1 | >7 | 3 |
-| 1010657 | The Lookout at Broadmoor | 2 | ≤7 | **1 (NEW)** |
-| 1010752 | Centennial East Apartments | 3 | ≤7 | **2 (NEW)** |
+### T9 — 8-order BC proof captures the exact local release sequence
+The current local proof run used a clean 8-order Denver / TAVA Waters batch with no appended child orders.
 
-**Input (request body):** `["1010764","1010626","1010524","1010657","1010752"]`
-**Output (API response `result[0]`):** `"Job Failed from D365BC : 1010657,1010752,1010524,1010626,1010764,1010657-CO1,1010657-CO2,"`
-**BC mock first `$batch` request URL:** `sales('Order','1010657')/Microsoft.NAV.Release`
+Observed ordered payload sent into NANCY:
+1. `1010660`
+2. `1010638`
+3. `1010626`
+4. `1010537`
+5. `1010524`
+6. `1010498`
+7. `1010436`
+8. `1009866`
 
-Sort rule (`GEOFF.BUSINESS/OrderModule/OrderModule.cs`):
-```csharp
-OrderDeatil = OrderDeatil
-    .OrderByDescending(o => newCustomerIds.Contains(o.ContactInfoId))
-    .ThenBy(o => priorityMap.TryGetValue(o.ContactInfoId, out var p)
-                   && p.HasValue ? p.Value : int.MaxValue)
-    .ThenBy(o => o.CreatedOn)
-    .ToList();
-```
+Observed order at the BC mock:
+1. `1009866`
+2. `1010436`
+3. `1010498`
+4. `1010524`
+5. `1010537`
+6. `1010626`
+7. `1010638`
+8. `1010660`
 
-> **Note on "Failed" status:** the D365BC mock doesn't implement the `Microsoft.NAV.Release` handler and returns 404, which rolls up to `responsestatus: "Failed"`. That's a **mock limitation**, not a feature bug. The priority-sort happens *before* the BC call; the sort is visible in both (a) the ordered list returned in the API response body and (b) the order of URLs in the `$batch` request the mock received.
+Artifacts:
+- [`08-bc-priority-order-evidence.txt`](./08-bc-priority-order-evidence.txt)
+- [8-order BC proof image](./09-bc-mock-release-proof-8-orders.png)
+- [8-order BC proof JSON](./09-bc-mock-stats-after-process-eight.json)
+
+### T10 — Settings load from the DB-backed row
+During this refresh:
+- live UI showed master ON / scheduler ON / `60` / `7`
+- DB-backed API state matched those values
+- the page displayed a `Last changed` timestamp sourced from the saved settings row
 
 ---
 
-## 4. Regression Tests (original platform)
+## 4. Regression Checks (current refresh)
 
-Verified the feature change didn't break anything pre-existing. All passed.
+| # | Endpoint / Flow | Observed |
+|---|---|---|
+| R1 | `POST /Authentication/api/Login/SignIn` | works with `robert@standardinteriors.com / LocalDev123!` |
+| R2 | `GET /User/api/Roles/GetRoleList` | 13 roles |
+| R3 | `GET /User/api/User/GetUser` | 111 users |
+| R4 | `GET /User/api/Signup/GetUsers` | 20 |
+| R5 | Dashboard UI flow | all five summary widgets still render `500` |
+| R6 | Existing Orders grid | `Priority` column present; orange and blue row states confirmed live |
+| R7 | `GET /User/api/CustomerPriority/GetList?storeId=12` | 5 Denver rows |
+| R8 | `GET /User/api/CustomerPriority/GetSettings` | returns ON / ON / `60` / `7` |
+| R9 | API logs sample | local-dev noise present; no Customer Priority-specific exception in sampled tail |
+| R10 | Local feature path services | core NANCY feature path is available on the current local stack |
 
-| # | Endpoint / Flow | HTTP | Observed |
-|---|---|---|---|
-| R1 | `POST /Authentication/api/Login/SignIn` | 200 | JWT returned, length 415 |
-| R2 | `GET /User/api/Roles/GetRoleList` | 200 | 13 roles |
-| R3 | `GET /User/api/RolePermission/GetMenuPermission` | 200 | returns menu tree |
-| R4 | `GET /User/api/CustomerInfo/GetCustomerInfo` | 200 | **5,224** customers |
-| R5 | `GET /User/api/User/GetUser` | 200 | 111 users |
-| R6 | `GET /User/api/Signup/GetUsers` | 200 | 20 |
-| R7 | Existing Orders list render (before filter) | — | 20 rows, Priority column present |
-| R8 | Login UI flow + dashboard widgets (Contacts/Proposals/Orders/Invoices/Reports) | — | all five widgets render, value `500` |
-| R9 | `docker logs geoff-api --tail 200` for unhandled exceptions | — | **clean** |
-| R10 | All 8 containers healthy | — | all up |
-| R11 | `RoleAuthorizationFilter` left commented on sibling controllers | — | confirmed in `RolesController.cs:20` |
+Not re-verified during this refresh:
+- exact `GetCustomerInfo` count quoted in the older report
 
 ---
 
 ## 5. Known Limitations & Caveats
 
-1. **`RoleAuthorizationFilter` is disabled on `CustomerPriorityController`.** This matches sibling controllers in the local-dev environment because the local auth-proxy JWT lacks a `roleaccess` claim. Must be re-enabled before production deploy once the claim is wired into real tokens.
-2. **Chrome `file_upload` was blocked by the MCP extension's security layer** during UI testing; the dropzone accepts a synthetic `File` via JS but react-dropzone's `onDrop` does not fire from a synthetic event. Backend import behavior (dedup, validation, wipe-and-replace) was verified directly with curl-driven `POST /Import` calls — the logic in `CustomerPriorityModule.Import` is the same code that runs in response to the UI.
-3. **BC mock** does not implement `Microsoft.NAV.Release`. It accepts the `$batch` payload (so we can confirm ordering) and returns OK on the wrapper but 404 on each inner release. Production BC returns 200, so the reported "Failed" in local dev will disappear against real BC.
-4. **Nothing is committed** on either repo — both are on `feature/customer_priority` with 11 + 9 uncommitted files respectively. That's intentional: QA reviews on this branch before it goes up.
+1. **Local auth / authorization are still non-production.** `CustomerPriorityController` uses `[Authorize]`, but `RoleAuthorizationFilter` remains commented out locally because the auth-proxy JWT does not carry the production role-access claim. The API working tree also still relies on the local-only HS256 JWT patch in `GEOFF.API/Startup.cs`.
+
+2. **MCP file-upload automation is still limited.** The UI import flow works for real users, but automated browser file upload remains awkward enough that server-side import behavior is the more reliable verification surface here.
+
+3. **The current live 8-order BC proof does not yet match the visible ordered payload.** In the current local run, the BC mock saw the reverse of the ordered payload sent into NANCY. Treat that as the active defect / risk on the NANCY side.
+
+4. **Settings endpoints are not represented in current role metadata.** `GetSettings` and `SaveSettings` exist and work locally, but the current role/menu metadata still only explicitly models `GetList`, `Import`, and `Remove`. This is masked locally because role filtering is disabled.
+
+5. **Automated tests remain deferred.** Unit tests for the corrected new-customer rule and the screen-order-to-BC-order path were not checked in as part of this QA package refresh.
+
+6. **Scheduler verification is intentionally out of scope here.** The separate downstream app now has its own QA handoff in [QA-Report-Scheduler-Customer-Priority.md](./QA-Report-Scheduler-Customer-Priority.md).
 
 ---
 
-## 6. Sign-off checklist
+## 6. Sign-off Checklist
 
-- [x] New feature functions end-to-end on local-dev
-- [x] Validation: `storeId` and file required
-- [x] Dedup on import (case-insensitive property name)
-- [x] Wipe-and-replace per store (transactional)
-- [x] Existing Orders row colors + Priority column
-- [x] Precedence rule orange > blue honored
-- [x] Priority-sorted bulk release to BC
-- [x] Zero regressions on core NANCY endpoints
-- [x] Zero unhandled exceptions in API log
-- [x] Feature is on `feature/customer_priority` in both repos
+- [x] Current branch / environment metadata refreshed
+- [x] Current admin settings panel documented
+- [x] Current DB-backed defaults documented
+- [x] Existing Orders priority states documented against live UI / DOM
+- [x] Current local Process Orders success path documented
+- [x] Current 8-order BC proof captured and linked
+- [x] NANCY-vs-Scheduler scope split explicitly
+- [ ] Live BC order aligned with the visible ordered payload
+- [ ] Automated tests added for the current release-order behavior
 
-**Recommendation: promote branch to QA env, run QA's smoke scripts, then merge to `blue`.**
+**Recommendation:** use this report as the NANCY-only source of truth. Treat the current local BC ordering mismatch as the main open issue before broader handoff.
