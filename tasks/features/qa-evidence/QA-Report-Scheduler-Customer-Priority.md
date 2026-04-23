@@ -6,7 +6,7 @@
 **QA environment:** Local Scheduler only, pointed at local NANCY. No AWS services were used.
 **Tested by:** Codex (live local Scheduler UIs + local DB / test verification already completed during bring-up)
 **Refresh date:** 2026-04-22 (MDT)
-**Status:** **GREEN — the local Scheduler before/after proof is clear and the priority UI behavior is visible.**
+**Status:** **GREEN for local demo — the before/after proof is clear and the priority UI behavior is visible. Not yet PR-ready by itself because the after-state was verified in the local bring-up workspace, not a clean Scheduler feature branch.**
 
 ---
 

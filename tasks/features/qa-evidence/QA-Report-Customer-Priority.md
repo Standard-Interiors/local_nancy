@@ -30,7 +30,8 @@ Admins manage Customer Priority at `/customer-priority`.
 Per-store list behavior:
 - Upload is **wipe-and-replace** for the selected store.
 - Import deduplicates by trimmed, case-insensitive property name.
-- The live seeded Denver list currently contains 5 rows.
+- The current demo state uses the real workbook import from `Customer Tier-Priority Import Actual.xlsx`: `169 imported`, `24 skipped`, and `14 duplicates removed`.
+- The top Denver rows include `Premier Lofts = 1`, `Park 146 = 5`, `TAVA Waters = 16`, and `The Lookout at Broadmoor = 21`.
 
 Global settings behavior:
 - **Feature enabled (master)**: master kill switch for Existing Orders coloring, default sort, and Process Orders ordering behavior.
@@ -99,7 +100,7 @@ Customer Priority spans two DB objects:
 
 1. **`TR_CustomerPriority`**
    - per-store VIP priority rows
-   - currently seeded with 5 active Denver rows on this machine
+   - current demo state reflects the real Denver workbook import, with top rows including `Premier Lofts = 1` and `Park 146 = 5`
 
 2. **`TR_CustomerPrioritySetting`**
    - single-row global settings table on the current branch
@@ -134,7 +135,7 @@ Test login:
 2. Go to **Admin** -> **Customer Priority**.
 3. Confirm the global settings panel loads.
 4. Confirm the selected store is **Denver**.
-5. Confirm the 5 seeded Denver priorities render in rank order.
+5. Confirm the imported workbook priorities render in rank order.
 
 Expected current values on this machine:
 - master ON
@@ -227,7 +228,7 @@ The **Customer Priority** button is present in the Admin menu for the seeded adm
 ![Admin page with Customer Priority button](./01-admin-page-customer-priority-button.png)
 
 ### T2 — Customer Priority page loads with settings + seeded priorities
-Live refresh screenshot from the current environment. The page includes the global settings panel above the per-store list.
+Live refresh screenshot from the current environment. The page includes the global settings panel above the imported Denver priority list. The top rows reflect the actual workbook import, starting with `Premier Lofts = 1`.
 
 ![Customer Priority list page](./02-customer-priority-list.png)
 
@@ -263,6 +264,8 @@ Live DOM verification during this refresh still reported TAVA rows as `rgb(187, 
 
 ### T8 — Process Orders succeeds for a live local NANCY row
 The local operator proof still stands: `Premier Lofts` job `1010659` can be processed successfully from the Existing Orders screen, and the row flips to `Processed = Yes`.
+
+![Process Orders — Premier Lofts before and after](./10-process-orders-premier-lofts-before-after.png)
 
 ### T9 — 8-order BC proof captures the exact local release sequence
 The current local proof run used a clean 8-order Denver / TAVA Waters batch with no appended child orders.
@@ -310,7 +313,7 @@ During this refresh:
 | R4 | `GET /User/api/Signup/GetUsers` | 20 |
 | R5 | Dashboard UI flow | all five summary widgets still render `500` |
 | R6 | Existing Orders grid | `Priority` column present; orange and blue row states confirmed live |
-| R7 | `GET /User/api/CustomerPriority/GetList?storeId=12` | 5 Denver rows |
+| R7 | `GET /User/api/CustomerPriority/GetList?storeId=12` | imported Denver workbook priorities present; top rows include `Premier Lofts = 1` and `Park 146 = 5` |
 | R8 | `GET /User/api/CustomerPriority/GetSettings` | returns ON / ON / `60` / `7` |
 | R9 | API logs sample | local-dev noise present; no Customer Priority-specific exception in sampled tail |
 | R10 | Local feature path services | core NANCY feature path is available on the current local stack |
